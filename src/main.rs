@@ -27,33 +27,37 @@ struct ShowEnvArgs {
 struct CreateEnvArgs {
     #[arg(short, long)]
     prefix: String,
+
+    #[arg(short, long)]
+    pubkey: String,
 }
 
 #[derive(Debug)]
 enum Error {
-    RequestFailed(reqwest::Error, String, Value),
-    InvalidResponseJson(reqwest::Error, String, Value),
-    ApiBadRequest(String, Value),
-    ApiUnauthorized(String, Value),
-    ApiForbidden(String, Value),
-    ApiNotFound(String, Value),    
-    ApiMethodNotAllowed(String, Value),
-    ApiNotAcceptable(String, Value),
-    ApiRequestTimeout(String, Value),
-    ApiConflict(String, Value),
-    ApiLengthRequired(String, Value),
-    ApiPayloadTooLarge(String, Value),
-    ApiUnsupportedMediaType(String, Value),
-    ApiInternalServerError(String, Value),
-    ApiServiceUnavailable(String, Value),
-    ApiUnknownStatusCode(StatusCode, String, Value),
+    RequestFailed(reqwest::Error, String, Option<Value>),
+    InvalidResponseJson(reqwest::Error, String, Option<Value>),
+    ApiBadRequest(String, Option<Value>),
+    ApiUnauthorized(String, Option<Value>),
+    ApiForbidden(String, Option<Value>),
+    ApiNotFound(String, Option<Value>),    
+    ApiMethodNotAllowed(String, Option<Value>),
+    ApiNotAcceptable(String, Option<Value>),
+    ApiRequestTimeout(String, Option<Value>),
+    ApiConflict(String, Option<Value>),
+    ApiLengthRequired(String, Option<Value>),
+    ApiPayloadTooLarge(String, Option<Value>),
+    ApiUnsupportedMediaType(String, Option<Value>),
+    ApiInternalServerError(String, Option<Value>),
+    ApiServiceUnavailable(String, Option<Value>),
+    ApiUnknownStatusCode(StatusCode, String, Option<Value>),
     SearchApiInvalidTotalCount(String, Value),
     SearchApiInvalidIndexFrom(Option<u64>, String, Value),
     SearchApiInvalidResourceCount(String, Value),
     SearchApiInvalidResourceArray(Value, String, Value),
-    ResourceApiInvalidStatusBoolean(String, Value),
-    ResourceApiInvalidStatusFalse(String, Value),
-    ResourceApiInvalidResourceObject(String, Value),
+    ResourceApiInvalidStatusBoolean(String, Option<Value>),
+    ResourceApiInvalidStatusFalse(String, Option<Value>),
+    ResourceApiInvalidResourceObject(String, Option<Value>),
+    ResourceApiInvalidResourceId(String, Value),
     TooManyResources(String, usize),
     ResourceNotFound(String),
 }
@@ -62,83 +66,151 @@ static ACCESS_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_ACCESS_TOKE
 static SECRET_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_SECRET_TOKEN").unwrap() });
 static API_BASE_URL: Lazy<Url> = Lazy::new(|| { Url::parse(format!("https://secure.sakura.ad.jp/cloud/zone/{}/api/cloud/1.1/", env::var("SACLOUD_ZONE").unwrap()).as_str()).unwrap() });
 
+fn primary_server_name(prefix: impl AsRef<str>) -> String { format!("{}-server", prefix.as_ref()) }
+fn primary_server_disk_name(prefix: impl AsRef<str>) -> String { format!("{}-disk", prefix.as_ref()) }
+fn primary_server_pubkey_name(prefix: impl AsRef<str>) -> String { format!("{}-pub-key", prefix.as_ref()) }
+fn switch_name(prefix: impl AsRef<str>) -> String { format!("{}-switch", prefix.as_ref()) }
+fn vpc_router_name(prefix: impl AsRef<str>) -> String { format!("{}-vpcrouter", prefix.as_ref()) }
+
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
     match args.cmd {
-        Cmd::ShowEnv(args) => show_env(args.prefix).await?,
-        Cmd::CreateEnv(args) => create_env(args.prefix).await?,
-    };
-    Ok(())
+        Cmd::ShowEnv(args) => show_env(args.prefix).await,
+        Cmd::CreateEnv(args) => create_env(args.prefix, args.pubkey).await,
+    }
 }
 
 async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
-    let server = search_primary_server(prefix).await?;
-    println!("{}", to_string_pretty(&server).unwrap());
-    todo!();
-}
+    let (key_id, key) = search_ssh_public_key(prefix).await?;
+    println!("Key {}: {}", key_id, to_string_pretty(&key).unwrap());
+    println!("----------");
 
-async fn create_env(prefix: impl AsRef<str>) -> Result<(), Error> {
-    let prefix = prefix.as_ref();
-    let _router_name = create_vpc_router(prefix).await?;
-    let _switch_name = create_switch(prefix).await?;
-    let disk_name = create_primary_server_disk(prefix).await?;
-    let server_name = create_primary_server(prefix).await?;
-    connect_disk_to_server(&disk_name, &server_name).await?;
-    start_server(&server_name).await?;
+    let (server_id, server) = search_primary_server(prefix).await?;
+    println!("Server {}: {}", server_id, to_string_pretty(&server).unwrap());
+    println!("----------");
+
+    let (disk_id, disk) = search_primary_server_disk(prefix).await?;
+    println!("Disk {}: {}", disk_id, to_string_pretty(&disk).unwrap());
+    println!("----------");
+
+    let (vpc_router_id, vpc_router) = search_vpc_router(prefix).await?;
+    println!("VPC Router {}: {}", vpc_router_id, to_string_pretty(&vpc_router).unwrap());
+    println!("----------");
+
+    let (switch_id, switch) = search_switch(prefix).await?;
+    println!("Switch {}: {}", switch_id, to_string_pretty(&switch).unwrap());
+    println!("----------");
+
     Ok(())
 }
 
-async fn search_primary_server(prefix: impl AsRef<str>) -> Result<Value, Error> {
+async fn create_env(prefix: impl AsRef<str>, public_key: impl AsRef<str>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
-    let name = format!("{}-server", prefix);
-    let servers = request_search_api("server", "Servers", Some(json!({ "Name": name })), None, None, 50).await?;
-    if servers.len() < 1 {
-        return Err(Error::ResourceNotFound("server".to_string()));
+    let key_id = register_ssh_public_key(prefix, public_key).await?;
+    let _ = create_vpc_router(prefix).await?;
+    let _ = create_switch(prefix).await?;
+    let (disk_id, _) = create_primary_server_disk(prefix, key_id).await?;
+    let (server_id, _) = create_primary_server(prefix).await?;
+    connect_disk_to_server(&disk_id, &server_id).await?;
+    start_server(&server_id).await?;
+    Ok(())
+}
+
+async fn search_primary_server(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let prefix = prefix.as_ref();
+    let name = primary_server_name(prefix);
+    search_single_resource(name, "server", "Servers").await
+}
+
+async fn search_primary_server_disk(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let prefix = prefix.as_ref();
+    let name = primary_server_disk_name(prefix);
+    search_single_resource(name, "disk", "Disks").await
+}
+
+async fn search_ssh_public_key(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let prefix = prefix.as_ref();
+    let name = primary_server_pubkey_name(prefix);
+    search_single_resource(name, "sshkey", "SSHKeys").await
+}
+
+async fn search_vpc_router(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let prefix = prefix.as_ref();
+    let name = vpc_router_name(prefix);
+    search_single_resource(name, "appliance", "Appliances").await
+}
+
+async fn search_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let prefix = prefix.as_ref();
+    let name = switch_name(prefix);
+    search_single_resource(name, "switch", "Switches").await
+}
+
+async fn search_single_resource(name: impl AsRef<str>, path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let name = name.as_ref();
+    let path = path.as_ref();
+    let resource_name = resource_name.as_ref();
+    let mut resources = request_search_api(&path, &resource_name, Some(json!({ "Name": name })), None, None, 50).await?;
+    if resources.len() < 1 {
+        return Err(Error::ResourceNotFound(resource_name.to_string()));
     }
-    if servers.len() > 1 {
-        return Err(Error::TooManyResources("server".to_string(), servers.len()));
+    if resources.len() > 1 {
+        return Err(Error::TooManyResources(resource_name.to_string(), resources.len()));
     }
-    Ok(servers[0].clone())
+    let resource = resources[0].take();
+    let resource_id = get_resource_id(&resource)?;
+    Ok((resource_id, resource))
 }
 
-async fn create_primary_server(prefix: impl AsRef<str>) -> Result<String, Error> {
-    let name = format!("{}-server", prefix.as_ref());
+async fn create_primary_server(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let name = primary_server_name(prefix);
     let req_body = todo!();
-    request_create_api("server", &req_body).await?;
-    Ok(name)
+    request_create_api("server", "Server", req_body).await
 }
 
-async fn create_primary_server_disk(prefix: impl AsRef<str>) -> Result<String, Error> {
-    let name = format!("{}-disk", prefix.as_ref());
+async fn create_primary_server_disk(prefix: impl AsRef<str>, key_id: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let name = primary_server_disk_name(prefix);
     let req_body = todo!();
-    request_create_api("disk", &req_body).await?;
-    Ok(name)
+    request_create_api("disk", "Disk", req_body).await
 }
 
-async fn connect_disk_to_server(disk_name: impl AsRef<str>, server_name: impl AsRef<str>) -> Result<(), Error> {
+async fn register_ssh_public_key(prefix: impl AsRef<str>, public_key: impl AsRef<str>) -> Result<String, Error> {
+    let name = primary_server_pubkey_name(prefix);
+    let req_body = json!({
+        "SSHKey": {
+            "Name": name.clone(),
+            "Description": name.clone(),
+            "PublicKey": public_key.as_ref(),
+        },
+    });
+    let (key_id, _) = request_create_api("sshkey", "SSHKey", req_body).await?;
+    Ok(key_id)
+}
+
+async fn connect_disk_to_server(disk_id: impl AsRef<str>, server_id: impl AsRef<str>) -> Result<(), Error> {
     todo!();
 }
 
-async fn start_server(server_name: impl AsRef<str>) -> Result<(), Error> {
+async fn start_server(server_id: impl AsRef<str>) -> Result<(), Error> {
     todo!();
 }
 
-async fn create_switch(prefix: impl AsRef<str>) -> Result<String, Error> {
-    let name = format!("{}-swich", prefix.as_ref());
+async fn create_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let name = switch_name(prefix);
     let req_body = json!({
         "Switch": {
             "Name": name.clone(),
             "Description": name.clone(),
         },
     });
-    request_create_api("switch", &req_body).await?;
-    Ok(name)
+    request_create_api("switch", "Switch", req_body).await
 }
 
-async fn create_vpc_router(prefix: impl AsRef<str>) -> Result<String, Error> {
-    let name = format!("{}-vpcrouter", prefix.as_ref());
+async fn create_vpc_router(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let name = vpc_router_name(prefix);
     let req_body = json!({
         "Appliance": {
             "Class": "vpcrouter",
@@ -163,33 +235,45 @@ async fn create_vpc_router(prefix: impl AsRef<str>) -> Result<String, Error> {
             },
         },
     });
-    request_create_api("appliance", &req_body).await?;
-    Ok(name)
+    request_create_api("appliance", "Appliance", req_body).await
 }
 
-async fn request_create_api(path: impl AsRef<str>, body: &Value) -> Result<(), Error> {
-    let _ = request_resource_api(Method::POST, path, body, None, true, false).await?;
-    Ok(())
-}
-
-async fn request_fetch_api(path: impl AsRef<str>, body: &Value, resource_name: impl AsRef<str>) -> Result<Value, Error> {
-    request_resource_api(Method::GET, path, body, Some(resource_name.as_ref()), true, false).await
-}
-
-async fn request_update_api(path: impl AsRef<str>, body: &Value) -> Result<(), Error> {
-    let _ = request_resource_api(Method::PUT, path, body, None, false, true).await?;
-    Ok(())
-}
-
-async fn request_delete_api(path: impl AsRef<str>, body: &Value) -> Result<(), Error> {
-    let _ = request_resource_api(Method::DELETE, path, body, None, true, true).await?;
-    Ok(())
-}
-
-async fn request_resource_api(method: Method, path: impl AsRef<str>, body: &Value, resource_name: Option<&str>, needs_to_check_ok_status: bool, needs_to_check_success_status: bool) -> Result<Value, Error> {
+async fn request_create_api(path: impl AsRef<str>, resource_name: impl AsRef<str>, body: Value) -> Result<(String, Value), Error> {
     let path = path.as_ref();
     let resource_name = resource_name.as_ref();
-    let mut value = request_api(method, path, body).await?;
+    let resource = request_resource_api(Method::POST, path, Some(resource_name), Some(body.clone()), true, false).await?;
+    let resource_id = get_resource_id(&resource)?;
+    Ok((resource_id, resource))
+}
+
+async fn request_fetch_api(path: impl AsRef<str>, id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<Value, Error> {
+    let path = format!("{}/{}", path.as_ref(), id.as_ref());
+    let resource_name = resource_name.as_ref();
+    request_resource_api(Method::GET, path, Some(resource_name), None, true, false).await
+}
+
+async fn request_update_api(path: impl AsRef<str>, body: Value) -> Result<(), Error> {
+    let _ = request_resource_api(Method::PUT, path, None, Some(body), false, true).await?;
+    Ok(())
+}
+
+async fn request_delete_api(path: impl AsRef<str>, body: Value) -> Result<(), Error> {
+    let _ = request_resource_api(Method::DELETE, path, None, Some(body), true, true).await?;
+    Ok(())
+}
+
+fn get_resource_id(resource: &Value) -> Result<String, Error> {
+    let Some(resource_id) = resource["ID"].as_str() else {
+        return Err(Error::ResourceApiInvalidResourceId("".to_string(), resource.clone()));
+    };
+    Ok(resource_id.to_string())
+}
+
+async fn request_resource_api(method: Method, path: impl AsRef<str>, resource_name: Option<&str>, body: Option<Value>, needs_to_check_ok_status: bool, needs_to_check_success_status: bool) -> Result<Value, Error> {
+    let path = path.as_ref();
+    let resource_name = resource_name.as_ref();
+    let mut value = request_api(method, path, &body).await?;
+
     if needs_to_check_ok_status {
         let Some(is_ok) = value["is_ok"].as_bool() else {
             return Err(Error::ResourceApiInvalidStatusBoolean(path.to_string(), body.clone()));
@@ -239,7 +323,10 @@ async fn request_search_api(path: impl AsRef<str>, resource_name: impl AsRef<str
             body["Sort"] = sort;
         }
 
+        let body = Some(body);
         let value = request_api(Method::GET, path, &body).await?;
+
+        let body = body.expect("must be Some");
         let Some(total) = value["Total"].as_u64() else {
             return Err(Error::SearchApiInvalidTotalCount(path.to_string(), body.clone()));
         };
@@ -269,16 +356,19 @@ async fn request_search_api(path: impl AsRef<str>, resource_name: impl AsRef<str
     Ok(result_resources)
 }
 
-async fn request_api(method: Method, path: impl AsRef<str>, body: &Value) -> Result<Value, Error> {
+async fn request_api(method: Method, path: impl AsRef<str>, body: &Option<Value>) -> Result<Value, Error> {
     let path = path.as_ref();
-    log::trace!("START API REQUEST: method={:?}, path={}, body={}", method, path, body);
+    log::trace!("START API REQUEST: method={:?}, path={}, body={}", method, path, body.clone().unwrap_or_default());
 
     let client = reqwest::Client::new();
-    let res = client.request(method, API_BASE_URL.join(path).expect("must be valid url"))
-        .basic_auth(&*ACCESS_TOKEN, Some(&*SECRET_TOKEN))
-        .json(&body)
-        .send()
-        .await;
+    let mut req = client.request(method, API_BASE_URL.join(path).expect("must be valid url"))
+        .basic_auth(&*ACCESS_TOKEN, Some(&*SECRET_TOKEN));
+    if let Some(body) = body {
+        req = req.json(&body)
+    };
+
+    let res = req.send().await;
+
     let res = match res {
         Ok(res) => res,
         Err(e) => {
