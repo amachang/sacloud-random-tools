@@ -1,10 +1,10 @@
-use std::{io, env, path::{Path, PathBuf}};
+use std::{io, env, path::{Path, PathBuf}, time::Duration, collections::HashSet};
 use clap::{Parser, Subcommand};
 use once_cell::sync::Lazy;
 use url::Url;
 use serde_json::{Value, json, to_string_pretty};
 use reqwest::{Method, StatusCode};
-use tokio::fs;
+use tokio::{fs, time::sleep};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -65,6 +65,9 @@ enum Error {
     ResourceApiInvalidResourceId(String, Value),
     TooManyResources(String, usize),
     ResourceNotFound(String),
+    ResourceApiWaitStatusNotFound(String, String, Value),
+    ResourceApiWaitStatusFailed(String, String, Value),
+    ResourceApiWaitStatusUnknown(String, String, String, Value),
 }
 
 static ACCESS_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_ACCESS_TOKEN").unwrap() });
@@ -122,14 +125,21 @@ async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_k
     };
 
     let key_id = register_ssh_public_key(prefix, public_key).await?;
-    let _ = create_vpc_router(prefix).await?;
+    let (vpc_router_id, _) = create_vpc_router(prefix).await?;
+    wait_appliance_available(&vpc_router_id).await?;
+
     let (switch_id, _) = create_switch(prefix).await?;
     let (archive_id, _) = search_latest_ubuntu_public_archive().await?;
     let (disk_id, _) = create_primary_server_disk(prefix, archive_id, password, key_id).await?;
+    wait_disk_available(&disk_id).await?;
+
     let (server_id, _) = create_primary_server(prefix, switch_id).await?;
+    wait_server_available(&server_id).await?;
 
     connect_disk_to_server(&disk_id, &server_id).await?;
-    boot_server(&server_id).await?;
+    up_server(&server_id).await?;
+
+    wait_server_up(&server_id).await?;
     Ok(())
 }
 
@@ -215,6 +225,8 @@ async fn create_primary_server_disk(prefix: impl AsRef<str>, archive_id: impl As
     let archive_id = archive_id.as_ref();
     let password = password.as_ref();
     let key_id = key_id.as_ref();
+
+    // Config ではユーザは変えられない (ubuntu 固定)
     let req_body = json!({
         "Disk": {
             "Name": name.clone(),
@@ -255,7 +267,7 @@ async fn connect_disk_to_server(disk_id: impl AsRef<str>, server_id: impl AsRef<
     request_update_api(format!("disk/{}/to/server/{}", disk_id, server_id), None).await
 }
 
-async fn boot_server(server_id: impl AsRef<str>) -> Result<(), Error> {
+async fn up_server(server_id: impl AsRef<str>) -> Result<(), Error> {
     let server_id = server_id.as_ref();
     request_update_api(format!("server/{}/power", server_id), None).await
 }
@@ -308,13 +320,11 @@ async fn request_create_api(path: impl AsRef<str>, resource_name: impl AsRef<str
     Ok((resource_id, resource))
 }
 
-/*
 async fn request_fetch_api(path: impl AsRef<str>, id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<Value, Error> {
     let path = format!("{}/{}", path.as_ref(), id.as_ref());
     let resource_name = resource_name.as_ref();
     request_resource_api(Method::GET, path, Some(resource_name), None, true, false).await
 }
-*/
 
 async fn request_update_api(path: impl AsRef<str>, body: Option<Value>) -> Result<(), Error> {
     let _ = request_resource_api(Method::PUT, path, None, body, false, true).await?;
@@ -327,6 +337,58 @@ async fn request_delete_api(path: impl AsRef<str>, body: Value) -> Result<(), Er
     Ok(())
 }
 */
+
+async fn wait_server_up(server_id: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_status("server", server_id, "Server",
+        "InstanceStatus",
+        ["cleaning"].into_iter().collect(),
+        ["up"].into_iter().collect(),
+        ["down"].into_iter().collect()).await
+}
+
+async fn wait_server_available(server_id: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_available("server", server_id, "Server").await
+}
+
+async fn wait_disk_available(disk_id: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_available("disk", disk_id, "Disk").await
+}
+
+async fn wait_appliance_available(appliance_id: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_available("appliance", appliance_id, "Appliance").await
+}
+
+async fn wait_resource_available(path: impl AsRef<str>, resource_id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_status(path, resource_id, resource_name,
+        "Availability",
+        ["uploading", "migrating"].into_iter().collect(),
+        ["available"].into_iter().collect(),
+        ["failed"].into_iter().collect()).await
+}
+
+async fn wait_resource_status(path: impl AsRef<str>, resource_id: impl AsRef<str>, resource_name: impl AsRef<str>, status_name: impl AsRef<str>, working_value_set: HashSet<&str>, success_value_set: HashSet<&str>, failed_value_set: HashSet<&str>) -> Result<(), Error> {
+    let path = path.as_ref();
+    let resource_id = resource_id.as_ref();
+    let resource_name = resource_name.as_ref();
+    let status_name = status_name.as_ref();
+    loop {
+        let resource = request_fetch_api(path, resource_id, resource_name).await?;
+        let Some(status) = resource[status_name].as_str() else {
+            return Err(Error::ResourceApiWaitStatusNotFound(path.to_string(), resource_id.to_string(), resource.clone()));
+        };
+        if failed_value_set.contains(status) {
+            return Err(Error::ResourceApiWaitStatusFailed(path.to_string(), resource_id.to_string(), resource.clone()));
+        }
+        if success_value_set.contains(status) {
+            break;
+        }
+        if !working_value_set.contains(status) {
+            return Err(Error::ResourceApiWaitStatusUnknown(status.to_string(), path.to_string(), resource_id.to_string(), resource.clone()));
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+    Ok(())
+}
 
 fn get_resource_id(resource: &Value) -> Result<String, Error> {
     let Some(resource_id) = resource["ID"].as_str() else {
