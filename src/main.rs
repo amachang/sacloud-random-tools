@@ -83,7 +83,7 @@ async fn create_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
     let _router_name = create_vpc_router(prefix).await?;
     let _switch_name = create_switch(prefix).await?;
-    let disk_name = create_disk(prefix).await?;
+    let disk_name = create_primary_server_disk(prefix).await?;
     let server_name = create_primary_server(prefix).await?;
     connect_disk_to_server(&disk_name, &server_name).await?;
     start_server(&server_name).await?;
@@ -110,7 +110,7 @@ async fn create_primary_server(prefix: impl AsRef<str>) -> Result<String, Error>
     Ok(name)
 }
 
-async fn create_disk(prefix: impl AsRef<str>) -> Result<String, Error> {
+async fn create_primary_server_disk(prefix: impl AsRef<str>) -> Result<String, Error> {
     let name = format!("{}-disk", prefix.as_ref());
     let req_body = todo!();
     request_create_api("disk", &req_body).await?;
