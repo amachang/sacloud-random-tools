@@ -93,7 +93,6 @@ async fn create_env(prefix: impl AsRef<str>) -> Result<(), Error> {
 async fn search_primary_server(prefix: impl AsRef<str>) -> Result<Value, Error> {
     let prefix = prefix.as_ref();
     let name = format!("{}-server", prefix);
-    let req_body = json!({});
     let servers = request_search_api("server", "Servers", Some(json!({ "Name": name })), None, None, 50).await?;
     if servers.len() < 1 {
         return Err(Error::ResourceNotFound("server".to_string()));
