@@ -63,8 +63,8 @@ enum Error {
     SearchApiInvalidResourceCount(String, Value),
     SearchApiInvalidResourceArray(Value, String, Value),
     ResourceApiNoResourceId(Value),
-    ResourceApiInvalidStatusBoolean(String, Option<Value>),
-    ResourceApiInvalidStatusFalse(String, Option<Value>),
+    ResourceApiInvalidStatusDataType(Value, Value, String, Option<Value>),
+    ResourceApiInvalidStatusFalse(Value, String, Option<Value>),
     ResourceApiInvalidResourceObject(String, Option<Value>),
     ResourceApiInvalidResourceId(Value, Value),
     TooManyResources(String, usize),
@@ -79,7 +79,7 @@ static SECRET_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_SECRET_TOKE
 static API_BASE_URL: Lazy<Url> = Lazy::new(|| { Url::parse(format!("https://secure.sakura.ad.jp/cloud/zone/{}/api/cloud/1.1/", env::var("SACLOUD_ZONE").unwrap()).as_str()).unwrap() });
 
 fn primary_server_name(prefix: impl AsRef<str>) -> String { format!("{}-server", prefix.as_ref()) }
-fn primary_server_disk_name(prefix: impl AsRef<str>) -> String { format!("{}-disk", prefix.as_ref()) }
+fn primary_server_disk_name(prefix: impl AsRef<str>) -> String { format!("{}-server", prefix.as_ref()) }
 fn primary_server_pubkey_name(prefix: impl AsRef<str>) -> String { format!("{}-pub-key", prefix.as_ref()) }
 fn switch_name(prefix: impl AsRef<str>) -> String { format!("{}-switch", prefix.as_ref()) }
 fn vpc_router_name(prefix: impl AsRef<str>) -> String { format!("{}-vpc-router", prefix.as_ref()) }
@@ -225,8 +225,6 @@ async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_k
         Err(e) => return Err(Error::CouldntReadPublicKey(e, public_key_path.to_path_buf())),
     };
 
-    let key_id = register_ssh_public_key(prefix, public_key).await?;
-
     let (vpc_router_id, _) = create_vpc_router(prefix).await?;
     wait_appliance_available(&vpc_router_id).await?;
 
@@ -236,18 +234,20 @@ async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_k
 
     up_appliance(&vpc_router_id).await?;
     wait_appliance_up(&vpc_router_id).await?;
+    wait_appliance_available(&vpc_router_id).await?;
 
+    let key_id = register_ssh_public_key(prefix, public_key).await?;
     let (archive_id, _) = search_latest_ubuntu_public_archive().await?;
-    let (disk_id, _) = create_primary_server_disk(prefix, archive_id, password, key_id).await?;
-    wait_disk_available(&disk_id).await?;
 
     let (server_id, _) = create_primary_server(prefix, switch_id).await?;
+    let (disk_id, _) = create_primary_server_disk(prefix, &server_id, &archive_id, password, &key_id).await?;
+    wait_disk_available(&disk_id).await?;
     wait_server_available(&server_id).await?;
 
-    connect_disk_to_server(&disk_id, &server_id).await?;
-
     up_server(&server_id).await?;
+
     wait_server_up(&server_id).await?;
+    wait_server_available(&server_id).await?;
     Ok(())
 }
 
@@ -321,39 +321,57 @@ async fn create_primary_server(prefix: impl AsRef<str>, switch_id: impl AsRef<st
     let switch_id = switch_id.as_ref();
     let req_body = json!({
         "Server": {
+            "ServerPlan": { "ID": "100001001" },
+            /* ウェブのコンソールでは以下のような情報を送ってる要検討
+            "ServerPlan": {
+                "CPU": 1,
+                "GPU": 0,
+                "CPUModel": "uncategorized",
+                "MemoryMB": 1024,
+                "Generation": 100,
+                "Commitment": "standard"
+            },
+            */
+            "ConnectedSwitches":[ { "ID": switch_id, "virtio": true } ],
             "Name": name.clone(),
             "Description": name.clone(),
-            "ServerPlan": { "ID": "100001001" },
-            "ConnectedSwitches": [ { "ID": switch_id } ],
+            "HostName": name.clone(),
             "InterfaceDriver": "virtio",
+            "WaitDiskMigration": true,
         },
     });
     request_create_api("server", "Server", req_body).await
 }
 
-async fn create_primary_server_disk(prefix: impl AsRef<str>, archive_id: impl AsRef<str>, password: impl AsRef<str>, key_id: impl AsRef<str>) -> Result<(String, Value), Error> {
+async fn create_primary_server_disk(prefix: impl AsRef<str>, server_id: impl AsRef<str>, archive_id: impl AsRef<str>, password: impl AsRef<str>, key_id: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = primary_server_disk_name(prefix);
+    let server_id = server_id.as_ref();
     let archive_id = archive_id.as_ref();
     let password = password.as_ref();
     let key_id = key_id.as_ref();
 
-    // Config ではユーザは変えられない (ubuntu 固定)
+    // Config ではユーザ名は変えられない (ubuntu 固定)
     let req_body = json!({
         "Disk": {
             "Name": name.clone(),
-            "Description": name.clone(),
-            "Connection": "virtio",
-            "SizeMB": 20480,
+            "Plan": { "ID": 4 },
             "SourceArchive": { "ID": archive_id },
-            "Config": {
-                "Password": password,
-                "SSHKey": { "ID": key_id },
-                "DisablePWAuth": false,
-                "HostName": name.clone(),
-                "UserIPAddress": "192.168.2.2",
-                "UserSubnet": { "DefaultRoute": "192.168.2.1", "NetworkMaskLen": 24 },
-                "EnableDHCP": false,
-            },
+            "SizeMB": 20480,
+            "EncryptionAlgorithm": "none",
+            "Connection": "virtio",
+            "Generation": 100,
+            "Server": { "ID": server_id },
+        },
+        "Config":{
+            "Password": password,
+            "HostName": name.clone(),
+            "SSHKeys": [{"ID": key_id }],
+            "ChangePartitionUUID": false,
+            "DisablePWAuth": false,
+            "UserIPAddress":"192.168.2.2",
+            "UserSubnet": { "DefaultRoute": "192.168.2.1", "NetworkMaskLen": 24 },
+            "EnableDHCP": false,
+            "Notes":[ { "ID": "113400300697", "Variables": { "usacloud": false, "updatepackage": true } } ]
         },
     });
     request_create_api("disk", "Disk", req_body).await
@@ -372,12 +390,6 @@ async fn register_ssh_public_key(prefix: impl AsRef<str>, public_key: impl AsRef
     Ok(key_id)
 }
 
-async fn connect_disk_to_server(disk_id: impl AsRef<str>, server_id: impl AsRef<str>) -> Result<(), Error> {
-    let disk_id = disk_id.as_ref();
-    let server_id = server_id.as_ref();
-    request_update_api(format!("disk/{}/to/server/{}", disk_id, server_id), None).await
-}
-
 async fn create_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = switch_name(prefix);
     let req_body = json!({
@@ -391,6 +403,7 @@ async fn create_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error
 
 async fn create_vpc_router(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = vpc_router_name(prefix);
+    // InternetConnection の Enabled は "True" など、文字列で指定する。 bool だと BadRequest になる。
     let req_body = json!({
         "Appliance":{
             "Class": "vpcrouter",
@@ -404,7 +417,7 @@ async fn create_vpc_router(prefix: impl AsRef<str>) -> Result<(String, Value), E
             },
             "Settings": {
                 "Router": {
-                    "InternetConnection": { "Enabled": true },
+                    "InternetConnection": { "Enabled": "True" },
                 },
             },
         },
@@ -432,11 +445,20 @@ async fn setup_vpc_router(vpc_router_id: impl AsRef<str>) -> Result<(), Error> {
                         "Config": [ { "Protocol": "tcp", "GlobalPort": "10022", "PrivateAddress": "192.168.2.2", "PrivatePort": "22" } ],
                         "Enabled": "True",
                     },
+                    "WireGuardServer": {
+                        "Config": { "IPAddress": "", "Peers": [] },
+                        "Enabled": "False"
+                    },
+                    "PPTPServer": { "Enabled": "False" },
+                    "L2TPIPsecServer": { "Enabled": "False" },
                 },
             },
         },
     });
-    request_update_api(format!("appliance/{}", vpc_router_id), Some(req_body)).await
+    request_update_api(format!("appliance/{}", vpc_router_id), Some(req_body)).await?;
+
+    // appliance に関してはこのコンソール上の「反映」という操作をしないと、設定が反映されない
+    request_update_api(format!("appliance/{}/config", vpc_router_id), None).await
 }
 
 async fn up_server(server_id: impl AsRef<str>) -> Result<(), Error> {
@@ -456,7 +478,7 @@ async fn up_resource(path: impl AsRef<str>, resource_id: impl AsRef<str>) -> Res
 async fn request_create_api(path: impl AsRef<str>, resource_name: impl AsRef<str>, body: Value) -> Result<(String, Value), Error> {
     let path = path.as_ref();
     let resource_name = resource_name.as_ref();
-    let resource = request_resource_api(Method::POST, path, Some(resource_name), Some(body.clone()), true, false).await?;
+    let resource = request_resource_api(Method::POST, path, Some(resource_name), Some(body.clone())).await?;
     let resource_id = get_resource_id(&resource)?;
     Ok((resource_id, resource))
 }
@@ -464,11 +486,11 @@ async fn request_create_api(path: impl AsRef<str>, resource_name: impl AsRef<str
 async fn request_fetch_api(path: impl AsRef<str>, id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<Value, Error> {
     let path = format!("{}/{}", path.as_ref(), id.as_ref());
     let resource_name = resource_name.as_ref();
-    request_resource_api(Method::GET, path, Some(resource_name), None, true, false).await
+    request_resource_api(Method::GET, path, Some(resource_name), None).await
 }
 
 async fn request_update_api(path: impl AsRef<str>, body: Option<Value>) -> Result<(), Error> {
-    let _ = request_resource_api(Method::PUT, path, None, body, false, true).await?;
+    let _ = request_resource_api(Method::PUT, path, None, body).await?;
     Ok(())
 }
 
@@ -484,12 +506,12 @@ async fn wait_server_up(server_id: impl AsRef<str>) -> Result<(), Error> {
 }
 
 async fn wait_appliance_up(appliance_id: impl AsRef<str>) -> Result<(), Error> {
-    wait_resource_up("appliance", appliance_id, "Server").await
+    wait_resource_up("appliance", appliance_id, "Appliance").await
 }
 
 async fn wait_resource_up(path: impl AsRef<str>, resource_id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {
     wait_resource_status(path, resource_id, resource_name,
-        "InstanceStatus",
+        |res| res["Instance"]["Status"].as_str().map(|s| s.to_string()),
         ["cleaning"].into_iter().collect(),
         ["up"].into_iter().collect(),
         ["down"].into_iter().collect()).await
@@ -509,22 +531,22 @@ async fn wait_appliance_available(appliance_id: impl AsRef<str>) -> Result<(), E
 
 async fn wait_resource_available(path: impl AsRef<str>, resource_id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {
     wait_resource_status(path, resource_id, resource_name,
-        "Availability",
+        |res| res["Availability"].as_str().map(|s| s.to_string()),
         ["uploading", "migrating"].into_iter().collect(),
         ["available"].into_iter().collect(),
         ["failed"].into_iter().collect()).await
 }
 
-async fn wait_resource_status(path: impl AsRef<str>, resource_id: impl AsRef<str>, resource_name: impl AsRef<str>, status_name: impl AsRef<str>, working_value_set: HashSet<&str>, success_value_set: HashSet<&str>, failed_value_set: HashSet<&str>) -> Result<(), Error> {
+async fn wait_resource_status(path: impl AsRef<str>, resource_id: impl AsRef<str>, resource_name: impl AsRef<str>, status_accessor_fn: impl Fn(&Value) -> Option<String>, working_value_set: HashSet<&str>, success_value_set: HashSet<&str>, failed_value_set: HashSet<&str>) -> Result<(), Error> {
     let path = path.as_ref();
     let resource_id = resource_id.as_ref();
     let resource_name = resource_name.as_ref();
-    let status_name = status_name.as_ref();
     loop {
         let resource = request_fetch_api(path, resource_id, resource_name).await?;
-        let Some(status) = resource[status_name].as_str() else {
+        let Some(status) = status_accessor_fn(&resource) else {
             return Err(Error::ResourceApiWaitStatusNotFound(path.to_string(), resource_id.to_string(), resource.clone()));
         };
+        let status: &str = &status;
         if failed_value_set.contains(status) {
             return Err(Error::ResourceApiWaitStatusFailed(path.to_string(), resource_id.to_string(), resource.clone()));
         }
@@ -551,25 +573,30 @@ fn get_resource_id(resource: &Value) -> Result<String, Error> {
     }
 }
 
-async fn request_resource_api(method: Method, path: impl AsRef<str>, resource_name: Option<&str>, body: Option<Value>, needs_to_check_ok_status: bool, needs_to_check_success_status: bool) -> Result<Value, Error> {
+async fn request_resource_api(method: Method, path: impl AsRef<str>, resource_name: Option<&str>, body: Option<Value>) -> Result<Value, Error> {
     let path = path.as_ref();
     let resource_name = resource_name.as_ref();
     let mut value = request_api(method, path, &None, &body).await?;
 
-    if needs_to_check_ok_status {
-        let Some(is_ok) = value["is_ok"].as_bool() else {
-            return Err(Error::ResourceApiInvalidStatusBoolean(path.to_string(), body.clone()));
+    if let Some(is_ok) = value.get("is_ok") {
+        let Some(is_ok) = is_ok.as_bool() else {
+            return Err(Error::ResourceApiInvalidStatusDataType(is_ok.clone(), value.clone(), path.to_string(), body.clone()));
         };
         if !is_ok {
-            return Err(Error::ResourceApiInvalidStatusFalse(path.to_string(), body.clone()));
+            return Err(Error::ResourceApiInvalidStatusFalse(value.clone(), path.to_string(), body.clone()));
         }
     }
-    if needs_to_check_success_status {
-        let Some(is_success) = value["Success"].as_bool() else {
-            return Err(Error::ResourceApiInvalidStatusBoolean(path.to_string(), body.clone()));
-        };
-        if !is_success {
-            return Err(Error::ResourceApiInvalidStatusFalse(path.to_string(), body.clone()));
+    if let Some(success_status) = value.get("Success") {
+        if let Some(success_status) = success_status.as_str() {
+            if success_status != "Accepted" {
+                return Err(Error::ResourceApiInvalidStatusFalse(value.clone(), path.to_string(), body.clone()));
+            }
+        } else if let Some(success_status) = success_status.as_bool() {
+            if !success_status {
+                return Err(Error::ResourceApiInvalidStatusFalse(value.clone(), path.to_string(), body.clone()));
+            }
+        } else {
+            return Err(Error::ResourceApiInvalidStatusDataType(success_status.clone(), value.clone(), path.to_string(), body.clone()));
         }
     }
 
@@ -682,7 +709,7 @@ async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value
             ()
         },
         status_code => {
-            log::trace!("ERROR API REQUEST: status={}", status_code);
+            log::trace!("ERROR API REQUEST: response={:?}", res);
             match status_code {
                 StatusCode::BAD_REQUEST => {
                     // 400 Bad Request	リクエストパラメータが不正等。 例：許可されないフィールドに対し、負の値、過去の日付、異なる型の値等が指定されている
