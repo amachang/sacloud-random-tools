@@ -5,6 +5,8 @@ use url::Url;
 use serde_json::{Value, json, to_string_pretty};
 use reqwest::{Method, StatusCode};
 use tokio::{fs, time::sleep};
+use log;
+use env_logger;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -83,6 +85,7 @@ fn vpc_router_name(prefix: impl AsRef<str>) -> String { format!("{}-vpcrouter", 
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    env_logger::init();
     let args = Args::parse();
     match args.cmd {
         Cmd::ShowEnv(args) => show_env(args.prefix).await,
@@ -226,7 +229,10 @@ async fn search_single_resource_by_tags(tags: Vec<&str>, path: impl AsRef<str>, 
 
 async fn search_single_resource_by_name(name: impl AsRef<str>, path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = name.as_ref();
-    let filter = json!({ "Name": name });
+    // https://developer.sakura.ad.jp/cloud/api/1.1/
+    // array は exact match の OR 検索
+    // string は space separated な単語を contains match の AND 検索
+    let filter = json!({ "Name": [ name ] });
     search_single_resource(path, filter, resource_name).await
 }
 
@@ -440,7 +446,7 @@ fn get_resource_id(resource: &Value) -> Result<String, Error> {
 async fn request_resource_api(method: Method, path: impl AsRef<str>, resource_name: Option<&str>, body: Option<Value>, needs_to_check_ok_status: bool, needs_to_check_success_status: bool) -> Result<Value, Error> {
     let path = path.as_ref();
     let resource_name = resource_name.as_ref();
-    let mut value = request_api(method, path, &body).await?;
+    let mut value = request_api(method, path, &None, &body).await?;
 
     if needs_to_check_ok_status {
         let Some(is_ok) = value["is_ok"].as_bool() else {
@@ -475,43 +481,43 @@ async fn request_search_api(path: impl AsRef<str>, resource_name: impl AsRef<str
     let resource_name = resource_name.as_ref();
     let mut result_resources = Vec::new();
     let mut index_from = 0;
-    let body = if let Some(other) = other {
+    let query = if let Some(other) = other {
         other
     } else {
         json!({})
     };
     loop {
-        let mut body = body.clone();
-        body["From"] = Value::from(index_from);
-        body["Count"] = Value::from(page_count);
+        let mut query = query.clone();
+        query["From"] = Value::from(index_from);
+        query["Count"] = Value::from(page_count);
         if let Some(filter) = filter.clone() {
-            body["Filter"] = filter;
+            query["Filter"] = filter;
         }
         if let Some(sort) = sort.clone() {
-            body["Sort"] = sort;
+            query["Sort"] = sort;
         }
 
-        let body = Some(body);
-        let value = request_api(Method::GET, path, &body).await?;
+        let query = Some(query);
+        let value = request_api(Method::GET, path, &query, &None).await?;
 
-        let body = body.expect("must be Some");
+        let query = query.expect("must be Some");
         let Some(total) = value["Total"].as_u64() else {
-            return Err(Error::SearchApiInvalidTotalCount(path.to_string(), body.clone()));
+            return Err(Error::SearchApiInvalidTotalCount(path.to_string(), query.clone()));
         };
         let Some(response_index_from) = value["From"].as_u64() else {
-            return Err(Error::SearchApiInvalidIndexFrom(None, path.to_string(), body.clone()));
+            return Err(Error::SearchApiInvalidIndexFrom(None, path.to_string(), query.clone()));
         };
 
         if index_from != response_index_from {
-            return Err(Error::SearchApiInvalidIndexFrom(Some(response_index_from), path.to_string(), body.clone()));
+            return Err(Error::SearchApiInvalidIndexFrom(Some(response_index_from), path.to_string(), query.clone()));
         }
 
         let Some(count) = value["Count"].as_u64() else {
-            return Err(Error::SearchApiInvalidResourceCount(path.to_string(), body.clone()));
+            return Err(Error::SearchApiInvalidResourceCount(path.to_string(), query.clone()));
         };
 
         let Some(resources) = value[resource_name].as_array() else {
-            return Err(Error::SearchApiInvalidResourceArray(value, path.to_string(), body.clone()));
+            return Err(Error::SearchApiInvalidResourceArray(value, path.to_string(), query.clone()));
         };
         result_resources.extend(resources.to_vec());
 
@@ -524,12 +530,16 @@ async fn request_search_api(path: impl AsRef<str>, resource_name: impl AsRef<str
     Ok(result_resources)
 }
 
-async fn request_api(method: Method, path: impl AsRef<str>, body: &Option<Value>) -> Result<Value, Error> {
+async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value>, body: &Option<Value>) -> Result<Value, Error> {
     let path = path.as_ref();
-    log::trace!("START API REQUEST: method={:?}, path={}, body={}", method, path, body.clone().unwrap_or_default());
+    log::trace!("START API REQUEST: method={:?}, path={}, query={}, body={}", method, path, query.clone().unwrap_or_default(), body.clone().unwrap_or_default());
 
+    let mut url = API_BASE_URL.join(path).expect("must be valid url");
+    if let Some(query) = query {
+        url.set_query(Some(&query.to_string()));
+    }
     let client = reqwest::Client::new();
-    let mut req = client.request(method, API_BASE_URL.join(path).expect("must be valid url"))
+    let mut req = client.request(method, url)
         .basic_auth(&*ACCESS_TOKEN, Some(&*SECRET_TOKEN));
     if let Some(body) = body {
         req = req.json(&body)
