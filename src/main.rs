@@ -90,23 +90,23 @@ async fn main() -> Result<(), Error> {
 async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
     let (key_id, key) = search_ssh_public_key(prefix).await?;
-    println!("Key {}: {}", key_id, to_string_pretty(&key).unwrap());
+    println!("Key {}: {}", key_id, to_string_pretty(&key).expect("must be valid json"));
     println!("----------");
 
     let (server_id, server) = search_primary_server(prefix).await?;
-    println!("Server {}: {}", server_id, to_string_pretty(&server).unwrap());
+    println!("Server {}: {}", server_id, to_string_pretty(&server).expect("must be valid json"));
     println!("----------");
 
     let (disk_id, disk) = search_primary_server_disk(prefix).await?;
-    println!("Disk {}: {}", disk_id, to_string_pretty(&disk).unwrap());
+    println!("Disk {}: {}", disk_id, to_string_pretty(&disk).expect("must be valid json"));
     println!("----------");
 
     let (vpc_router_id, vpc_router) = search_vpc_router(prefix).await?;
-    println!("VPC Router {}: {}", vpc_router_id, to_string_pretty(&vpc_router).unwrap());
+    println!("VPC Router {}: {}", vpc_router_id, to_string_pretty(&vpc_router).expect("must be valid json"));
     println!("----------");
 
     let (switch_id, switch) = search_switch(prefix).await?;
-    println!("Switch {}: {}", switch_id, to_string_pretty(&switch).unwrap());
+    println!("Switch {}: {}", switch_id, to_string_pretty(&switch).expect("must be valid json"));
     println!("----------");
 
     Ok(())
@@ -120,12 +120,14 @@ async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_k
         Ok(public_key) => public_key,
         Err(e) => return Err(Error::CouldntReadPublicKey(e, public_key_path.to_path_buf())),
     };
+
     let key_id = register_ssh_public_key(prefix, public_key).await?;
     let _ = create_vpc_router(prefix).await?;
     let (switch_id, _) = create_switch(prefix).await?;
     let (archive_id, _) = search_latest_ubuntu_public_archive().await?;
     let (disk_id, _) = create_primary_server_disk(prefix, archive_id, password, key_id).await?;
     let (server_id, _) = create_primary_server(prefix, switch_id).await?;
+
     connect_disk_to_server(&disk_id, &server_id).await?;
     boot_server(&server_id).await?;
     Ok(())
