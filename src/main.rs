@@ -16,25 +16,26 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    ShowAllResources,
     ShowEnv(ShowEnvArgs),
     CreateEnv(CreateEnvArgs),
 }
 
 #[derive(Debug, Parser)]
 struct ShowEnvArgs {
-    #[arg(short, long)]
+    #[arg(long)]
     prefix: String,
 }
 
 #[derive(Debug, Parser)]
 struct CreateEnvArgs {
-    #[arg(short, long)]
+    #[arg(long)]
     prefix: String,
 
-    #[arg(short, long)]
+    #[arg(long)]
     pubkey: PathBuf,
 
-    #[arg(short, long)]
+    #[arg(long)]
     password: String,
 }
 
@@ -61,10 +62,11 @@ enum Error {
     SearchApiInvalidIndexFrom(Option<u64>, String, Value),
     SearchApiInvalidResourceCount(String, Value),
     SearchApiInvalidResourceArray(Value, String, Value),
+    ResourceApiNoResourceId(Value),
     ResourceApiInvalidStatusBoolean(String, Option<Value>),
     ResourceApiInvalidStatusFalse(String, Option<Value>),
     ResourceApiInvalidResourceObject(String, Option<Value>),
-    ResourceApiInvalidResourceId(String, Value),
+    ResourceApiInvalidResourceId(Value, Value),
     TooManyResources(String, usize),
     ResourceNotFound(String),
     ResourceApiWaitStatusNotFound(String, String, Value),
@@ -80,7 +82,7 @@ fn primary_server_name(prefix: impl AsRef<str>) -> String { format!("{}-server",
 fn primary_server_disk_name(prefix: impl AsRef<str>) -> String { format!("{}-disk", prefix.as_ref()) }
 fn primary_server_pubkey_name(prefix: impl AsRef<str>) -> String { format!("{}-pub-key", prefix.as_ref()) }
 fn switch_name(prefix: impl AsRef<str>) -> String { format!("{}-switch", prefix.as_ref()) }
-fn vpc_router_name(prefix: impl AsRef<str>) -> String { format!("{}-vpcrouter", prefix.as_ref()) }
+fn vpc_router_name(prefix: impl AsRef<str>) -> String { format!("{}-vpc-router", prefix.as_ref()) }
 
 
 #[tokio::main]
@@ -88,9 +90,65 @@ async fn main() -> Result<(), Error> {
     env_logger::init();
     let args = Args::parse();
     match args.cmd {
+        Cmd::ShowAllResources => show_all_resources().await,
         Cmd::ShowEnv(args) => show_env(args.prefix).await,
         Cmd::CreateEnv(args) => create_env(args.prefix, args.password, args.pubkey).await,
     }
+}
+
+async fn show_all_resources() -> Result<(), Error> {
+    let resource_pairs = vec![
+        ("privatehost", "PrivateHosts"),
+        ("server", "Servers"),
+        ("disk", "Disks"),
+        ("switch", "Switches"),
+        ("archive", "Archives"),
+        ("cdrom", "CDROMs"),
+        ("bridge", "Bridges"),
+        ("internet", "Internet"),
+        // ("ipaddress", "IPAddress"),
+        // ("ipv6addr", "IPv6Addrs"),
+        // ("ipv6net", "IPv6Nets"),
+        // ("subnet", "Subnets"),
+        // ("interface", "Interfaces"),
+        ("packetfilter", "PacketFilters"),
+        ("appliance", "Appliances"),
+        ("commonserviceitem", "CommonServiceItems"),
+        ("icon", "Icons"),
+        ("note", "Notes"),
+        ("sshkey", "SSHKeys"),
+    ];
+    for (path, resource_name) in resource_pairs {
+        let resources = request_search_api(path, resource_name, None, None, None, 50).await?;
+
+        // filter shared resources
+        let resources = resources.iter().filter(|v| { v["Scope"].as_str().map(|s| s == "user").unwrap_or(true) }).collect::<Vec<_>>();
+
+        if 0 < resources.len() {
+            println!("{}", resource_name);
+            for resource in resources {
+                match get_resource_id(&resource) {
+                    Ok(resource_id) => {
+                        if let Some(resource_name) = resource["Name"].as_str() {
+                            println!("{}: {}", resource_id, resource_name);
+                        } else {
+                            println!("{}: {}", resource_id, to_string_pretty(&resource).expect("must be valid json"));
+                        }
+                    }
+                    Err(Error::ResourceApiNoResourceId(_)) => {
+                        if let Some(resource_name) = resource["Name"].as_str() {
+                            println!("{}", resource_name);
+                        } else {
+                            println!("{}", to_string_pretty(&resource).expect("must be valid json"));
+                        }
+                    }
+                    Err(e) => return Err(e),
+                };
+            }
+            println!("----------");
+        }
+    }
+    Ok(())
 }
 
 async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
@@ -168,10 +226,17 @@ async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_k
     };
 
     let key_id = register_ssh_public_key(prefix, public_key).await?;
+
     let (vpc_router_id, _) = create_vpc_router(prefix).await?;
     wait_appliance_available(&vpc_router_id).await?;
 
     let (switch_id, _) = create_switch(prefix).await?;
+    connect_vpc_router_to_switch(&vpc_router_id, &switch_id).await?;
+    setup_vpc_router(&vpc_router_id).await?;
+
+    up_appliance(&vpc_router_id).await?;
+    wait_appliance_up(&vpc_router_id).await?;
+
     let (archive_id, _) = search_latest_ubuntu_public_archive().await?;
     let (disk_id, _) = create_primary_server_disk(prefix, archive_id, password, key_id).await?;
     wait_disk_available(&disk_id).await?;
@@ -180,8 +245,8 @@ async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_k
     wait_server_available(&server_id).await?;
 
     connect_disk_to_server(&disk_id, &server_id).await?;
-    up_server(&server_id).await?;
 
+    up_server(&server_id).await?;
     wait_server_up(&server_id).await?;
     Ok(())
 }
@@ -313,11 +378,6 @@ async fn connect_disk_to_server(disk_id: impl AsRef<str>, server_id: impl AsRef<
     request_update_api(format!("disk/{}/to/server/{}", disk_id, server_id), None).await
 }
 
-async fn up_server(server_id: impl AsRef<str>) -> Result<(), Error> {
-    let server_id = server_id.as_ref();
-    request_update_api(format!("server/{}/power", server_id), None).await
-}
-
 async fn create_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = switch_name(prefix);
     let req_body = json!({
@@ -332,30 +392,65 @@ async fn create_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error
 async fn create_vpc_router(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = vpc_router_name(prefix);
     let req_body = json!({
-        "Appliance": {
+        "Appliance":{
             "Class": "vpcrouter",
             "Name": name.clone(),
             "Description": name.clone(),
             "Plan": { "ID": 1 },
-            "Remark": {
+            "Remark":{
+                "Router": { "VPCRouterVersion": 2 },
                 "Servers": [ {} ],
-                "Switch": { "Scope": "shared" }
+                "Switch": { "Scope": "shared" },
             },
             "Settings": {
-                "Interfaces": [
-                    null,
-                    { "IPAddress": [ "192.168.2.1" ], "NetworkMaskLen": 24, },
-                ],
-                "PortForwarding": {
-                    "Config": [
-                        { "Protocol": "tcp", "GlobalPort": "10022", "PrivateAddress": "192.168.2.2", "PrivatePort": "22" },
-                    ],
-                    "Enabled": "True",
+                "Router": {
+                    "InternetConnection": { "Enabled": true },
                 },
             },
         },
     });
     request_create_api("appliance", "Appliance", req_body).await
+}
+
+async fn connect_vpc_router_to_switch(vpc_router_id: impl AsRef<str>, switch_id: impl AsRef<str>) -> Result<(), Error> {
+    let vpc_router_id = vpc_router_id.as_ref();
+    let switch_id = switch_id.as_ref();
+    request_update_api(format!("appliance/{}/interface/1/to/switch/{}", vpc_router_id, switch_id), None).await
+}
+
+async fn setup_vpc_router(vpc_router_id: impl AsRef<str>) -> Result<(), Error> {
+    let vpc_router_id = vpc_router_id.as_ref();
+    let req_body = json!({
+        "Appliance": {
+            "Settings": {
+                "Router": {
+                    "Interfaces": [
+                        null,
+                        { "IPAddress": [ "192.168.2.1" ], "NetworkMaskLen": 24 },
+                    ],
+                    "PortForwarding": {
+                        "Config": [ { "Protocol": "tcp", "GlobalPort": "10022", "PrivateAddress": "192.168.2.2", "PrivatePort": "22" } ],
+                        "Enabled": "True",
+                    },
+                },
+            },
+        },
+    });
+    request_update_api(format!("appliance/{}", vpc_router_id), Some(req_body)).await
+}
+
+async fn up_server(server_id: impl AsRef<str>) -> Result<(), Error> {
+    up_resource("server", server_id).await
+}
+
+async fn up_appliance(appliance_id: impl AsRef<str>) -> Result<(), Error> {
+    up_resource("appliance", appliance_id).await
+}
+
+async fn up_resource(path: impl AsRef<str>, resource_id: impl AsRef<str>) -> Result<(), Error> {
+    let resource_id = resource_id.as_ref();
+    let path = path.as_ref();
+    request_update_api(format!("{}/{}/power", path, resource_id), None).await
 }
 
 async fn request_create_api(path: impl AsRef<str>, resource_name: impl AsRef<str>, body: Value) -> Result<(String, Value), Error> {
@@ -385,7 +480,15 @@ async fn request_delete_api(path: impl AsRef<str>, body: Value) -> Result<(), Er
 */
 
 async fn wait_server_up(server_id: impl AsRef<str>) -> Result<(), Error> {
-    wait_resource_status("server", server_id, "Server",
+    wait_resource_up("server", server_id, "Server").await
+}
+
+async fn wait_appliance_up(appliance_id: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_up("appliance", appliance_id, "Server").await
+}
+
+async fn wait_resource_up(path: impl AsRef<str>, resource_id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_status(path, resource_id, resource_name,
         "InstanceStatus",
         ["cleaning"].into_iter().collect(),
         ["up"].into_iter().collect(),
@@ -437,10 +540,15 @@ async fn wait_resource_status(path: impl AsRef<str>, resource_id: impl AsRef<str
 }
 
 fn get_resource_id(resource: &Value) -> Result<String, Error> {
-    let Some(resource_id) = resource["ID"].as_str() else {
-        return Err(Error::ResourceApiInvalidResourceId("".to_string(), resource.clone()));
-    };
-    Ok(resource_id.to_string())
+    let resource_id = resource["ID"].clone();
+
+    if let Some(resource_id) = resource_id.as_str() {
+        Ok(resource_id.to_string())
+    } else if resource_id.is_null() {
+        Err(Error::ResourceApiNoResourceId(resource.clone()))
+    } else {
+        Err(Error::ResourceApiInvalidResourceId(resource_id, resource.clone()))
+    }
 }
 
 async fn request_resource_api(method: Method, path: impl AsRef<str>, resource_name: Option<&str>, body: Option<Value>, needs_to_check_ok_status: bool, needs_to_check_success_status: bool) -> Result<Value, Error> {
