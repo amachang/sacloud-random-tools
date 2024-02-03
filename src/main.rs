@@ -1,9 +1,10 @@
-use std::env;
+use std::{io, env, path::{Path, PathBuf}};
 use clap::{Parser, Subcommand};
 use once_cell::sync::Lazy;
 use url::Url;
 use serde_json::{Value, json, to_string_pretty};
 use reqwest::{Method, StatusCode};
+use tokio::fs;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -29,11 +30,15 @@ struct CreateEnvArgs {
     prefix: String,
 
     #[arg(short, long)]
-    pubkey: String,
+    pubkey: PathBuf,
+
+    #[arg(short, long)]
+    password: String,
 }
 
 #[derive(Debug)]
 enum Error {
+    CouldntReadPublicKey(io::Error, PathBuf),
     RequestFailed(reqwest::Error, String, Option<Value>),
     InvalidResponseJson(reqwest::Error, String, Option<Value>),
     ApiBadRequest(String, Option<Value>),
@@ -78,7 +83,7 @@ async fn main() -> Result<(), Error> {
     let args = Args::parse();
     match args.cmd {
         Cmd::ShowEnv(args) => show_env(args.prefix).await,
-        Cmd::CreateEnv(args) => create_env(args.prefix, args.pubkey).await,
+        Cmd::CreateEnv(args) => create_env(args.prefix, args.password, args.pubkey).await,
     }
 }
 
@@ -107,53 +112,76 @@ async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     Ok(())
 }
 
-async fn create_env(prefix: impl AsRef<str>, public_key: impl AsRef<str>) -> Result<(), Error> {
+async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_key_path: impl AsRef<Path>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
+    let password = password.as_ref();
+    let public_key_path = public_key_path.as_ref();
+    let public_key = match fs::read_to_string(&public_key_path).await {
+        Ok(public_key) => public_key,
+        Err(e) => return Err(Error::CouldntReadPublicKey(e, public_key_path.to_path_buf())),
+    };
     let key_id = register_ssh_public_key(prefix, public_key).await?;
     let _ = create_vpc_router(prefix).await?;
-    let _ = create_switch(prefix).await?;
-    let (disk_id, _) = create_primary_server_disk(prefix, key_id).await?;
-    let (server_id, _) = create_primary_server(prefix).await?;
+    let (switch_id, _) = create_switch(prefix).await?;
+    let (archive_id, _) = search_latest_ubuntu_public_archive().await?;
+    let (disk_id, _) = create_primary_server_disk(prefix, archive_id, password, key_id).await?;
+    let (server_id, _) = create_primary_server(prefix, switch_id).await?;
     connect_disk_to_server(&disk_id, &server_id).await?;
-    start_server(&server_id).await?;
+    boot_server(&server_id).await?;
     Ok(())
 }
 
 async fn search_primary_server(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let prefix = prefix.as_ref();
     let name = primary_server_name(prefix);
-    search_single_resource(name, "server", "Servers").await
+    search_single_resource_by_name(name, "server", "Servers").await
 }
 
 async fn search_primary_server_disk(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let prefix = prefix.as_ref();
     let name = primary_server_disk_name(prefix);
-    search_single_resource(name, "disk", "Disks").await
+    search_single_resource_by_name(name, "disk", "Disks").await
 }
 
 async fn search_ssh_public_key(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let prefix = prefix.as_ref();
     let name = primary_server_pubkey_name(prefix);
-    search_single_resource(name, "sshkey", "SSHKeys").await
+    search_single_resource_by_name(name, "sshkey", "SSHKeys").await
 }
 
 async fn search_vpc_router(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let prefix = prefix.as_ref();
     let name = vpc_router_name(prefix);
-    search_single_resource(name, "appliance", "Appliances").await
+    search_single_resource_by_name(name, "appliance", "Appliances").await
 }
 
 async fn search_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let prefix = prefix.as_ref();
     let name = switch_name(prefix);
-    search_single_resource(name, "switch", "Switches").await
+    search_single_resource_by_name(name, "switch", "Switches").await
 }
 
-async fn search_single_resource(name: impl AsRef<str>, path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(String, Value), Error> {
+async fn search_latest_ubuntu_public_archive() -> Result<(String, Value), Error> {
+    let tags = vec!["ubuntu-22.04-latest"];
+    search_single_resource_by_tags(tags, "archive", "Archives").await
+}
+
+async fn search_single_resource_by_tags(tags: Vec<&str>, path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(String, Value), Error> {
+    let tags = tags.iter().map(|s| Value::from(s.to_string())).collect::<Vec<_>>();
+    let filter = json!({ "Tags": tags });
+    search_single_resource(path, filter, resource_name).await
+}
+
+async fn search_single_resource_by_name(name: impl AsRef<str>, path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = name.as_ref();
+    let filter = json!({ "Name": name });
+    search_single_resource(path, filter, resource_name).await
+}
+
+async fn search_single_resource(path: impl AsRef<str>, filter: Value, resource_name: impl AsRef<str>) -> Result<(String, Value), Error> {
     let path = path.as_ref();
     let resource_name = resource_name.as_ref();
-    let mut resources = request_search_api(&path, &resource_name, Some(json!({ "Name": name })), None, None, 50).await?;
+    let mut resources = request_search_api(&path, &resource_name, Some(filter), None, None, 50).await?;
     if resources.len() < 1 {
         return Err(Error::ResourceNotFound(resource_name.to_string()));
     }
@@ -165,15 +193,44 @@ async fn search_single_resource(name: impl AsRef<str>, path: impl AsRef<str>, re
     Ok((resource_id, resource))
 }
 
-async fn create_primary_server(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
+async fn create_primary_server(prefix: impl AsRef<str>, switch_id: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = primary_server_name(prefix);
-    let req_body = todo!();
+    let switch_id = switch_id.as_ref();
+    let req_body = json!({
+        "Server": {
+            "Name": name.clone(),
+            "Description": name.clone(),
+            "ServerPlan": { "ID": "100001001" },
+            "ConnectedSwitches": [ { "ID": switch_id } ],
+            "InterfaceDriver": "virtio",
+        },
+    });
     request_create_api("server", "Server", req_body).await
 }
 
-async fn create_primary_server_disk(prefix: impl AsRef<str>, key_id: impl AsRef<str>) -> Result<(String, Value), Error> {
+async fn create_primary_server_disk(prefix: impl AsRef<str>, archive_id: impl AsRef<str>, password: impl AsRef<str>, key_id: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = primary_server_disk_name(prefix);
-    let req_body = todo!();
+    let archive_id = archive_id.as_ref();
+    let password = password.as_ref();
+    let key_id = key_id.as_ref();
+    let req_body = json!({
+        "Disk": {
+            "Name": name.clone(),
+            "Description": name.clone(),
+            "Connection": "virtio",
+            "SizeMB": 20480,
+            "SourceArchive": { "ID": archive_id },
+            "Config": {
+                "Password": password,
+                "SSHKey": { "ID": key_id },
+                "DisablePWAuth": false,
+                "HostName": name.clone(),
+                "UserIPAddress": "192.168.2.2",
+                "UserSubnet": { "DefaultRoute": "192.168.2.1", "NetworkMaskLen": 24 },
+                "EnableDHCP": false,
+            },
+        },
+    });
     request_create_api("disk", "Disk", req_body).await
 }
 
@@ -191,11 +248,14 @@ async fn register_ssh_public_key(prefix: impl AsRef<str>, public_key: impl AsRef
 }
 
 async fn connect_disk_to_server(disk_id: impl AsRef<str>, server_id: impl AsRef<str>) -> Result<(), Error> {
-    todo!();
+    let disk_id = disk_id.as_ref();
+    let server_id = server_id.as_ref();
+    request_update_api(format!("disk/{}/to/server/{}", disk_id, server_id), None).await
 }
 
-async fn start_server(server_id: impl AsRef<str>) -> Result<(), Error> {
-    todo!();
+async fn boot_server(server_id: impl AsRef<str>) -> Result<(), Error> {
+    let server_id = server_id.as_ref();
+    request_update_api(format!("server/{}/power", server_id), None).await
 }
 
 async fn create_switch(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
@@ -246,21 +306,25 @@ async fn request_create_api(path: impl AsRef<str>, resource_name: impl AsRef<str
     Ok((resource_id, resource))
 }
 
+/*
 async fn request_fetch_api(path: impl AsRef<str>, id: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<Value, Error> {
     let path = format!("{}/{}", path.as_ref(), id.as_ref());
     let resource_name = resource_name.as_ref();
     request_resource_api(Method::GET, path, Some(resource_name), None, true, false).await
 }
+*/
 
-async fn request_update_api(path: impl AsRef<str>, body: Value) -> Result<(), Error> {
-    let _ = request_resource_api(Method::PUT, path, None, Some(body), false, true).await?;
+async fn request_update_api(path: impl AsRef<str>, body: Option<Value>) -> Result<(), Error> {
+    let _ = request_resource_api(Method::PUT, path, None, body, false, true).await?;
     Ok(())
 }
 
+/*
 async fn request_delete_api(path: impl AsRef<str>, body: Value) -> Result<(), Error> {
     let _ = request_resource_api(Method::DELETE, path, None, Some(body), true, true).await?;
     Ok(())
 }
+*/
 
 fn get_resource_id(resource: &Value) -> Result<String, Error> {
     let Some(resource_id) = resource["ID"].as_str() else {
