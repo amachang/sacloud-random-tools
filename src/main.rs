@@ -92,25 +92,65 @@ async fn main() -> Result<(), Error> {
 
 async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
-    let (key_id, key) = search_ssh_public_key(prefix).await?;
-    println!("Key {}: {}", key_id, to_string_pretty(&key).expect("must be valid json"));
-    println!("----------");
+    match search_ssh_public_key(prefix).await {
+        Ok((key_id, key)) => {
+            println!("Key {}: {}", key_id, to_string_pretty(&key).expect("must be valid json"));
+            println!("----------");
+        },
+        Err(Error::ResourceNotFound(_)) => {
+            println!("Key not found");
+            println!("----------");
+        },
+        Err(e) => return Err(e),
+    };
 
-    let (server_id, server) = search_primary_server(prefix).await?;
-    println!("Server {}: {}", server_id, to_string_pretty(&server).expect("must be valid json"));
-    println!("----------");
+    match search_primary_server(prefix).await {
+        Ok((server_id, server)) => {
+            println!("Server {}: {}", server_id, to_string_pretty(&server).expect("must be valid json"));
+            println!("----------");
+        },
+        Err(Error::ResourceNotFound(_)) => {
+            println!("Server not found");
+            println!("----------");
+        },
+        Err(e) => return Err(e),
+    };
 
-    let (disk_id, disk) = search_primary_server_disk(prefix).await?;
-    println!("Disk {}: {}", disk_id, to_string_pretty(&disk).expect("must be valid json"));
-    println!("----------");
+    match search_primary_server_disk(prefix).await {
+        Ok((disk_id, disk)) => {
+            println!("Disk {}: {}", disk_id, to_string_pretty(&disk).expect("must be valid json"));
+            println!("----------");
+        },
+        Err(Error::ResourceNotFound(_)) => {
+            println!("Disk not found");
+            println!("----------");
+        },
+        Err(e) => return Err(e),
+    };
 
-    let (vpc_router_id, vpc_router) = search_vpc_router(prefix).await?;
-    println!("VPC Router {}: {}", vpc_router_id, to_string_pretty(&vpc_router).expect("must be valid json"));
-    println!("----------");
+    match search_vpc_router(prefix).await {
+        Ok((vpc_router_id, vpc_router)) => {
+            println!("VPC Router {}: {}", vpc_router_id, to_string_pretty(&vpc_router).expect("must be valid json"));
+            println!("----------");
+        },
+        Err(Error::ResourceNotFound(_)) => {
+            println!("VPC Router not found");
+            println!("----------");
+        },
+        Err(e) => return Err(e),
+    };
 
-    let (switch_id, switch) = search_switch(prefix).await?;
-    println!("Switch {}: {}", switch_id, to_string_pretty(&switch).expect("must be valid json"));
-    println!("----------");
+    match search_switch(prefix).await {
+        Ok((switch_id, switch)) => {
+            println!("Switch {}: {}", switch_id, to_string_pretty(&switch).expect("must be valid json"));
+            println!("----------");
+        },
+        Err(Error::ResourceNotFound(_)) => {
+            println!("Switch not found");
+            println!("----------");
+        },
+        Err(e) => return Err(e),
+    };
 
     Ok(())
 }
