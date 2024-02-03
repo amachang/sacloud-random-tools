@@ -74,8 +74,8 @@ async fn main() -> Result<(), Error> {
 
 async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
-    let fetch_server = fetch_server(prefix).await?;
-    println!("{}", to_string_pretty(&fetch_server).unwrap());
+    let server = search_primary_server(prefix).await?;
+    println!("{}", to_string_pretty(&server).unwrap());
     todo!();
 }
 
@@ -84,17 +84,17 @@ async fn create_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     let _router_name = create_vpc_router(prefix).await?;
     let _switch_name = create_switch(prefix).await?;
     let disk_name = create_disk(prefix).await?;
-    let server_name = create_server(prefix).await?;
+    let server_name = create_primary_server(prefix).await?;
     connect_disk_to_server(&disk_name, &server_name).await?;
     start_server(&server_name).await?;
     Ok(())
 }
 
-async fn fetch_server(prefix: impl AsRef<str>) -> Result<Value, Error> {
+async fn search_primary_server(prefix: impl AsRef<str>) -> Result<Value, Error> {
     let prefix = prefix.as_ref();
     let name = format!("{}-server", prefix);
     let req_body = json!({});
-    let servers = request_search_api("server", &req_body, "Servers", Some(json!({ "Name": name })), None, 50).await?;
+    let servers = request_search_api("server", "Servers", Some(json!({ "Name": name })), None, None, 50).await?;
     if servers.len() < 1 {
         return Err(Error::ResourceNotFound("server".to_string()));
     }
@@ -104,7 +104,7 @@ async fn fetch_server(prefix: impl AsRef<str>) -> Result<Value, Error> {
     Ok(servers[0].clone())
 }
 
-async fn create_server(prefix: impl AsRef<str>) -> Result<String, Error> {
+async fn create_primary_server(prefix: impl AsRef<str>) -> Result<String, Error> {
     let name = format!("{}-server", prefix.as_ref());
     let req_body = todo!();
     request_create_api("server", &req_body).await?;
@@ -219,11 +219,16 @@ async fn request_resource_api(method: Method, path: impl AsRef<str>, body: &Valu
     }
 }
 
-async fn request_search_api(path: impl AsRef<str>, body: &Value, resource_name: impl AsRef<str>, filter: Option<Value>, sort: Option<Value>, page_count: u64) -> Result<Vec<Value>, Error> {
+async fn request_search_api(path: impl AsRef<str>, resource_name: impl AsRef<str>, filter: Option<Value>, sort: Option<Value>, other: Option<Value>, page_count: u64) -> Result<Vec<Value>, Error> {
     let path = path.as_ref();
     let resource_name = resource_name.as_ref();
     let mut result_resources = Vec::new();
     let mut index_from = 0;
+    let body = if let Some(other) = other {
+        other
+    } else {
+        json!({})
+    };
     loop {
         let mut body = body.clone();
         body["From"] = Value::from(index_from);
