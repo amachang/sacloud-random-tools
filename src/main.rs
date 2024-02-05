@@ -18,11 +18,18 @@ struct Args {
 enum Cmd {
     ShowAllResources,
     ShowEnv(ShowEnvArgs),
+    UpdateVpcRouterConfig(ShowEnvArgs),
     CreateEnv(CreateEnvArgs),
 }
 
 #[derive(Debug, Parser)]
 struct ShowEnvArgs {
+    #[arg(long)]
+    prefix: String,
+}
+
+#[derive(Debug, Parser)]
+struct UpdateVpcRouterConfigArgs {
     #[arg(long)]
     prefix: String,
 }
@@ -90,13 +97,14 @@ async fn main() -> Result<(), Error> {
     env_logger::init();
     let args = Args::parse();
     match args.cmd {
-        Cmd::ShowAllResources => show_all_resources().await,
-        Cmd::ShowEnv(args) => show_env(args.prefix).await,
-        Cmd::CreateEnv(args) => create_env(args.prefix, args.password, args.pubkey).await,
+        Cmd::ShowAllResources => cmd_show_all_resources().await,
+        Cmd::ShowEnv(args) => cmd_show_env(args.prefix).await,
+        Cmd::UpdateVpcRouterConfig(args) => cmd_update_vpc_router_config(args.prefix).await,
+        Cmd::CreateEnv(args) => cmd_create_env(args.prefix, args.password, args.pubkey).await,
     }
 }
 
-async fn show_all_resources() -> Result<(), Error> {
+async fn cmd_show_all_resources() -> Result<(), Error> {
     let resource_pairs = vec![
         ("privatehost", "PrivateHosts"),
         ("server", "Servers"),
@@ -151,7 +159,7 @@ async fn show_all_resources() -> Result<(), Error> {
     Ok(())
 }
 
-async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
+async fn cmd_show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
     match search_ssh_public_key(prefix).await {
         Ok((key_id, key)) => {
@@ -216,7 +224,15 @@ async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
     Ok(())
 }
 
-async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_key_path: impl AsRef<Path>) -> Result<(), Error> {
+async fn cmd_update_vpc_router_config(prefix: impl AsRef<str>) -> Result<(), Error> {
+    let prefix = prefix.as_ref();
+    let (vpc_router_id, _) = search_vpc_router(prefix).await?;
+    update_vpc_router_config(&vpc_router_id).await?;
+    wait_appliance_available(&vpc_router_id).await?;
+    Ok(())
+}
+
+async fn cmd_create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_key_path: impl AsRef<Path>) -> Result<(), Error> {
     let prefix = prefix.as_ref();
     let password = password.as_ref();
     let public_key_path = public_key_path.as_ref();
@@ -230,7 +246,7 @@ async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_k
 
     let (switch_id, _) = create_switch(prefix).await?;
     connect_vpc_router_to_switch(&vpc_router_id, &switch_id).await?;
-    setup_vpc_router(&vpc_router_id).await?;
+    update_vpc_router_config(&vpc_router_id).await?;
 
     up_appliance(&vpc_router_id).await?;
     wait_appliance_up(&vpc_router_id).await?;
@@ -431,8 +447,23 @@ async fn connect_vpc_router_to_switch(vpc_router_id: impl AsRef<str>, switch_id:
     request_update_api(format!("appliance/{}/interface/1/to/switch/{}", vpc_router_id, switch_id), None).await
 }
 
-async fn setup_vpc_router(vpc_router_id: impl AsRef<str>) -> Result<(), Error> {
+async fn update_vpc_router_config(vpc_router_id: impl AsRef<str>) -> Result<(), Error> {
     let vpc_router_id = vpc_router_id.as_ref();
+
+    let mut firewall_receive_config = Vec::new();
+    let mut firewall_send_config = Vec::new();
+
+    if let Some(local_ip) = public_ip::addr_v4().await {
+        firewall_receive_config.push(json!({ "Protocol": "ip", "SourceNetwork": format!("{}/32", local_ip), "Action": "allow", "Description": "local" }));
+        firewall_send_config.push(json!({ "Protocol": "ip", "DestinationNetwork": format!("{}/32", local_ip), "Action": "allow", "Description": "local" }));
+    }
+    firewall_receive_config.extend([
+        json!({ "Protocol": "ip", "Action": "deny", "Description": "otherwise" }),
+    ]);
+    firewall_send_config.extend([
+        json!({ "Protocol": "ip", "Action": "deny", "Description": "otherwise" }),
+    ]);
+
     let req_body = json!({
         "Appliance": {
             "Settings": {
@@ -441,6 +472,15 @@ async fn setup_vpc_router(vpc_router_id: impl AsRef<str>) -> Result<(), Error> {
                         null,
                         { "IPAddress": [ "192.168.2.1" ], "NetworkMaskLen": 24 },
                     ],
+                    "Firewall": {
+                        "Config": [
+                            {
+                                "Receive": firewall_receive_config,
+                                "Send": firewall_send_config,
+                            },
+                        ],
+                        "Enabled": "True"
+                    },
                     "PortForwarding": {
                         "Config": [ { "Protocol": "tcp", "GlobalPort": "10022", "PrivateAddress": "192.168.2.2", "PrivatePort": "22" } ],
                         "Enabled": "True",
