@@ -1,11 +1,10 @@
-use std::{fmt, env, borrow::Borrow, time::Duration, collections::HashSet};
+use std::{fmt, env, borrow::Borrow, time::Duration, collections::HashSet, net::Ipv4Addr};
 use once_cell::sync::Lazy;
 use url::Url;
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Serialize, Deserialize};
 use serde_json::{self, Value, json};
 use reqwest::{Method, StatusCode};
 use tokio::time::sleep;
-use log;
 
 static ACCESS_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_ACCESS_TOKEN").unwrap() });
 static SECRET_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_SECRET_TOKEN").unwrap() });
@@ -43,6 +42,9 @@ pub(crate) enum Error {
     SearchApiInvalidIndexFrom(Option<u64>, String, Value),
     SearchApiInvalidResourceCount(String, Value),
     SearchApiInvalidResourceArray(Value, String, Value),
+    ResourceInfoLackOfRequiredField(String),
+    ResourceInfoPasswordGivenButPwAuthDisabled,
+    ResourceInfoPasswordNotGivenButPwAuthEnabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +56,8 @@ pub(crate) enum ResourceKind {
     Appliance,
     Archive,
     ServerPlan,
+    DiskPlan,
+    Note,
 }
 
 impl ResourceKind {
@@ -66,6 +70,8 @@ impl ResourceKind {
             Self::Appliance => "Appliance",
             Self::Archive => "Archive",
             Self::ServerPlan => "ServerPlan",
+            Self::DiskPlan => "DiskPlan",
+            Self::Note => "Note",
         }
     }
 
@@ -78,6 +84,8 @@ impl ResourceKind {
             Self::Appliance => "Appliances",
             Self::Archive => "Archives",
             Self::ServerPlan => "ServerPlans",
+            Self::DiskPlan => "DiskPlans",
+            Self::Note => "Notes",
         }
     }
 
@@ -90,6 +98,8 @@ impl ResourceKind {
             Self::Appliance => "appliance",
             Self::Archive => "archive",
             Self::ServerPlan => "product/server",
+            Self::DiskPlan => "product/disk",
+            Self::Note => "note",
         }
     }
 
@@ -133,25 +143,11 @@ impl ResourceKind {
     }
 }
 
-// Resource
-
-pub(crate) trait ResourceId: fmt::Display + DeserializeOwned {
-}
-
-pub(crate) trait Resource<Id: ResourceId>: DeserializeOwned {
-    fn from_value(value: Value) -> Result<Self, Error>;
-    fn to_value(&self) -> Result<Value, Error>;
-    fn kind() -> ResourceKind;
-    fn id(&self) -> &Id;
-}
 
 // Archive
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ArchiveId(String);
-
-impl ResourceId for ArchiveId {
-}
 
 impl fmt::Display for ArchiveId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -166,9 +162,15 @@ impl From<String> for ArchiveId {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ArchiveRef {
+    #[serde(rename = "ID")]
+    id: ArchiveId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Archive {
-    #[serde(rename = "ID", default)]
-    id: Option<ArchiveId>,
+    #[serde(rename = "ID")]
+    id: ArchiveId,
 }
 
 impl Archive {
@@ -179,34 +181,25 @@ impl Archive {
         };
         Archive::from_value(resource_value)
     }
-}
 
-impl Resource<ArchiveId> for Archive {
-    fn from_value(value: Value) -> Result<Self, Error> {
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Archive, e))
     }
 
-    fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Archive, e))
-    }
-
-    fn kind() -> ResourceKind {
+    pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Archive
     }
 
-    fn id(&self) -> &ArchiveId {
-        &self.id.expect("expect id if this function is called")
+    pub(crate) fn id(&self) -> &ArchiveId {
+        &self.id
     }
-
 }
+
 
 // Server
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServerId(String);
-
-impl ResourceId for ServerId {
-}
 
 impl fmt::Display for ServerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -221,45 +214,30 @@ impl From<String> for ServerId {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Server {
-    #[serde(rename = "ID", default)]
-    id: Option<ServerId>,
-
-    #[serde(rename = "Name")]
-    name: String,
-
-    #[serde(rename = "ServerPlan")]
-    server_plan: ServerPlan,
-
-    #[serde(rename = "Description")]
-    description: Option<String>,
-
-    #[serde(rename = "HostName")]
-    host_name: Option<String>,
-
-    #[serde(rename = "InterfaceDriver", default)]
-    interface_driver: InterfaceDriver,
-
-
-    // XXX probably used follows only creation time
-
-    #[serde(rename = "ConnectedSwitches", default)]
-    connected_switches: Option<Vec<ConnectedSwitch>>,
-
-    #[serde(rename = "WaitDiskMigration", default)]
-    wait_disk_migration: Option<bool>,
+pub(crate) struct ServerRef {
+    #[serde(rename = "ID")]
+    id: ServerId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum ConnectedSwitch {
-    Shared,
-    Switch(SwitchId),
+pub(crate) struct Server {
+    #[serde(rename = "ID")]
+    id: ServerId,
+
+    #[serde(flatten)]
+    info: ServerInfo,
 }
 
 impl Server {
     pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
         let resource_value = ResourceKind::Server.search_by_name(name).await?;
         resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
+    }
+
+    pub(crate) async fn create(info: ServerInfo) -> Result<Server, Error> {
+        let req_value = info.to_value()?;
+        let res_value = ResourceKind::Server.create(req_value).await?;
+        Server::from_value(res_value)
     }
 
     pub(crate) async fn is_connected_to_switch(server_id: impl Borrow<ServerId>, switch_id: impl Borrow<SwitchId>) -> Result<bool, Error> {
@@ -283,29 +261,67 @@ impl Server {
         let server_id = server_id.borrow();
         ResourceKind::Server.wait_up(server_id.to_string()).await
     }
-}
 
-impl Resource<ServerId> for Server {
-    fn from_value(value: Value) -> Result<Self, Error> {
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Server, e))
     }
 
-    fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Server, e))
-    }
-
-    fn kind() -> ResourceKind {
+    pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Server
     }
 
-    fn id(&self) -> &ServerId {
-        &self.id.expect("expect id if this function is called")
+    pub(crate) fn id(&self) -> &ServerId {
+        &self.id
     }
 }
 
-pub(crate) struct ServerCreator {
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ServerInfo {
+    #[serde(rename = "Name")]
+    name: String,
+
+    #[serde(rename = "ServerPlan")]
+    server_plan: ServerPlanRef,
+
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+
+    #[serde(rename = "HostName", skip_serializing_if = "Option::is_none")]
+    host_name: Option<String>,
+
+    #[serde(rename = "InterfaceDriver", default)]
+    interface_driver: InterfaceDriver,
+
+
+    // XXX probably used follows only creation time
+
+    #[serde(rename = "ConnectedSwitches", skip_serializing_if = "Option::is_none")]
+    connected_switches: Option<Vec<ConnectedSwitch>>,
+
+    #[serde(rename = "WaitDiskMigration", skip_serializing_if = "Option::is_none")]
+    wait_disk_migration: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum ConnectedSwitch {
+    Shared,
+    Switch(SwitchRef),
+}
+
+impl ServerInfo {
+    pub(crate) fn builder() -> ServerInfoBuilder {
+        ServerInfoBuilder::new()
+    }
+
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::ServerPlan, e))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ServerInfoBuilder {
     name: Option<String>,
-    server_plan: Option<ServerPlan>,
+    server_plan: Option<ServerPlanRef>,
     description: Option<String>,
     host_name: Option<String>,
     interface_driver: InterfaceDriver,
@@ -313,7 +329,7 @@ pub(crate) struct ServerCreator {
     wait_disk_migration: Option<bool>,
 }
 
-impl ServerCreator {
+impl ServerInfoBuilder {
     pub(crate) fn new() -> Self {
         Self {
             name: None,
@@ -331,8 +347,8 @@ impl ServerCreator {
         self
     }
 
-    pub(crate) fn server_plan(mut self, server_plan: ServerPlan) -> Self {
-        self.server_plan = Some(server_plan);
+    pub(crate) fn server_plan(mut self, server_plan_id: ServerPlanId) -> Self {
+        self.server_plan = Some(ServerPlanRef { id: server_plan_id });
         self
     }
 
@@ -352,7 +368,7 @@ impl ServerCreator {
     }
 
     pub(crate) fn connected_switch_ids(mut self, connected_switches: Vec<SwitchId>) -> Self {
-        self.connected_switches = Some(connected_switches.into_iter().map(ConnectedSwitch::Switch).collect());
+        self.connected_switches = Some(connected_switches.into_iter().map(|id| ConnectedSwitch::Switch(SwitchRef { id })).collect());
         self
     }
 
@@ -361,15 +377,14 @@ impl ServerCreator {
         self
     }
 
-    pub(crate) async fn create(self) -> Result<Server, Error> {
+    pub(crate) fn build(self) -> Result<ServerInfo, Error> {
         let Some(name) = self.name else {
-            todo!("name is required");
+            return Err(Error::ResourceInfoLackOfRequiredField("name".to_string()));
         };
         let Some(server_plan) = self.server_plan else {
-            todo!("server_plan is required");
+            return Err(Error::ResourceInfoLackOfRequiredField("server_plan".to_string()));
         };
-        let server = Server {
-            id: None,
+        Ok(ServerInfo {
             name: name,
             server_plan: server_plan,
             description: self.description,
@@ -377,20 +392,15 @@ impl ServerCreator {
             interface_driver: self.interface_driver,
             connected_switches: self.connected_switches,
             wait_disk_migration: self.wait_disk_migration,
-        };
-        let req_value = server.to_value()?;
-        let res_value = ResourceKind::Server.create(req_value).await?;
-        Server::from_value(res_value)
+        })
     }
 }
+
 
 // ServerPlan
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServerPlanId(String);
-
-impl ResourceId for ServerPlanId {
-}
 
 impl fmt::Display for ServerPlanId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -405,32 +415,28 @@ impl From<String> for ServerPlanId {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ServerPlanRef {
+    #[serde(rename = "ID")]
+    id: ServerPlanId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ServerPlan {
-    #[serde(rename = "ID", default)]
-    id: Option<ServerPlanId>,
+    #[serde(rename = "ID")]
+    id: ServerPlanId,
 }
 
 impl ServerPlan {
-    pub(crate) fn new(id: impl Into<ServerPlanId>) -> Self {
-        Self { id: Some(id.into()) }
-    }
-}
-
-impl Resource<ServerPlanId> for ServerPlan {
-    fn from_value(value: Value) -> Result<ServerPlan, Error> {
+    pub(crate) fn from_value(value: Value) -> Result<ServerPlan, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::ServerPlan, e))
     }
 
-    fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::ServerPlan, e))
-    }
-
-    fn kind() -> ResourceKind {
+    pub(crate) fn kind() -> ResourceKind {
         ResourceKind::ServerPlan
     }
 
-    fn id(&self) -> &ServerPlanId {
-        &self.id.expect("expect id if this function is called")
+    pub(crate) fn id(&self) -> &ServerPlanId {
+        &self.id
     }
 }
 
@@ -440,9 +446,6 @@ impl Resource<ServerPlanId> for ServerPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SwitchId(String);
-
-impl ResourceId for SwitchId {
-}
 
 impl fmt::Display for SwitchId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -457,9 +460,15 @@ impl From<String> for SwitchId {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SwitchRef {
+    #[serde(rename = "ID")]
+    id: SwitchId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Switch {
-    #[serde(rename = "ID", default)]
-    id: Option<SwitchId>,
+    #[serde(rename = "ID")]
+    id: SwitchId,
 }
 
 impl Switch {
@@ -494,23 +503,17 @@ impl Switch {
         let switch_id = switch_id.borrow();
         ResourceKind::Switch.wait_available(switch_id.to_string()).await
     }
-}
 
-impl Resource<SwitchId> for Switch {
-    fn from_value(value: Value) -> Result<Self, Error> {
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Switch, e))
     }
 
-    fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Switch, e))
-    }
-
-    fn kind() -> ResourceKind {
+    pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Switch
     }
 
-    fn id(&self) -> &SwitchId {
-        &self.id.expect("expect id if this function is called")
+    pub(crate) fn id(&self) -> &SwitchId {
+        &self.id
     }
 }
 
@@ -519,9 +522,6 @@ impl Resource<SwitchId> for Switch {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ApplianceId(String);
-
-impl ResourceId for ApplianceId {
-}
 
 impl fmt::Display for ApplianceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -537,8 +537,8 @@ impl From<String> for ApplianceId {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Appliance {
-    #[serde(rename = "ID", default)]
-    id: Option<ApplianceId>,
+    #[serde(rename = "ID")]
+    id: ApplianceId,
 }
 
 impl Appliance {
@@ -579,34 +579,49 @@ impl Appliance {
         let appliance_id = appliance_id.borrow();
         ResourceKind::Appliance.wait_up(appliance_id.to_string()).await
     }
-}
 
-impl Resource<ApplianceId> for Appliance {
-    fn from_value(value: Value) -> Result<Self, Error> {
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Appliance, e))
     }
 
-    fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Appliance, e))
-    }
-
-    fn kind() -> ResourceKind {
+    pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Appliance
     }
 
-    fn id(&self) -> &ApplianceId {
-        &self.id.expect("expect id if this function is called")
+    pub(crate) fn id(&self) -> &ApplianceId {
+        &self.id
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ApplianceInfo {
+    #[serde(rename = "Name")]
+    name: String,
+
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+
+    #[serde(flatten)]
+    class: ApplianceClass,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum ApplianceClass {
+
+    #[serde(rename = "vpcrouter")]
+    VpcRouter(VpcRouterInfo),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct VpcRouterInfo {
+    #[serde(rename = "Switch")]
+    switch: SwitchRef,
+}
 
 // Disk
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskId(String);
-
-impl ResourceId for DiskId {
-}
 
 impl fmt::Display for DiskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -622,8 +637,11 @@ impl From<String> for DiskId {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Disk {
-    #[serde(rename = "ID", default)]
-    id: Option<DiskId>,
+    #[serde(rename = "ID")]
+    id: DiskId,
+
+    #[serde(flatten)]
+    info: DiskInfo,
 }
 
 impl Disk {
@@ -632,27 +650,358 @@ impl Disk {
         resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
     }
 
+    pub(crate) async fn create(info: DiskInfo, config: DiskConfig) -> Result<Disk, Error> {
+        let info_value = info.to_value()?;
+        let config_value = config.to_value()?;
+
+        let disk_resource_name = ResourceKind::Disk.single_name();
+        let res_value = create(ResourceKind::Disk.path(), json!({ disk_resource_name: info_value, "Config": config_value }), disk_resource_name).await?;
+        Disk::from_value(res_value)
+    }
+
     pub(crate) async fn wait_available(disk_id: impl Borrow<DiskId>) -> Result<(), Error> {
         let disk_id = disk_id.borrow();
         ResourceKind::Disk.wait_available(disk_id.to_string()).await
     }
-}
 
-impl Resource<DiskId> for Disk {
-    fn from_value(value: Value) -> Result<Self, Error> {
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Disk, e))
     }
 
-    fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Disk, e))
-    }
-
-    fn kind() -> ResourceKind {
+    pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Disk
     }
 
-    fn id(&self) -> &DiskId {
-        &self.id.expect("expect id if this function is called")
+    pub(crate) fn id(&self) -> &DiskId {
+        &self.id
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct DiskInfo {
+    #[serde(rename = "Name")]
+    name: String,
+
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+
+    #[serde(rename = "Plan")]
+    plan: DiskPlanRef,
+
+    #[serde(rename = "SourceArchive")]
+    source_archive: ArchiveRef,
+
+    #[serde(rename = "SizeMB")]
+    size_mb: u64,
+
+    #[serde(rename = "Connection")]
+    connection: DiskConnection,
+
+    #[serde(rename = "Server")]
+    server: ServerRef,
+}
+
+impl DiskInfo {
+    pub(crate) fn builder() -> DiskInfoBuilder {
+        DiskInfoBuilder::new() 
+    }
+
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Disk, e))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DiskInfoBuilder {
+    name: Option<String>,
+    description: Option<String>,
+    plan: Option<DiskPlanRef>,
+    source_archive: Option<ArchiveRef>,
+    size_mb: Option<u64>,
+    connection: DiskConnection,
+    server: Option<ServerRef>,
+}
+
+impl DiskInfoBuilder {
+    fn new() -> Self {
+        Self {
+            name: None,
+            description: None,
+            plan: None,
+            source_archive: None,
+            size_mb: None,
+            connection: DiskConnection::Virtio,
+            server: None,
+        }
+    }
+
+    pub(crate) fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub(crate) fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub(crate) fn plan_id(mut self, plan_id: DiskPlanId) -> Self {
+        self.plan = Some(DiskPlanRef { id: plan_id });
+        self
+    }
+
+    pub(crate) fn source_archive_id(mut self, archive_id: ArchiveId) -> Self {
+        self.source_archive = Some(ArchiveRef { id: archive_id });
+        self
+    }
+
+    pub(crate) fn size_mb(mut self, size_mb: u64) -> Self {
+        self.size_mb = Some(size_mb);
+        self
+    }
+    
+    pub(crate) fn connection(mut self, connection: DiskConnection) -> Self {
+        self.connection = connection;
+        self
+    }
+
+    pub(crate) fn server_id(mut self, server_id: ServerId) -> Self {
+        self.server = Some(ServerRef { id: server_id });
+        self
+    }
+
+    pub(crate) fn build(self) -> Result<DiskInfo, Error> {
+        let Some(name) = self.name else {
+            return Err(Error::ResourceInfoLackOfRequiredField("name".to_string()));
+        };
+        let Some(plan) = self.plan else {
+            return Err(Error::ResourceInfoLackOfRequiredField("plan".to_string()));
+        };
+        let Some(source_archive) = self.source_archive else {
+            return Err(Error::ResourceInfoLackOfRequiredField("source_archive".to_string()));
+        };
+        let Some(size_mb) = self.size_mb else {
+            return Err(Error::ResourceInfoLackOfRequiredField("size_mb".to_string()));
+        };
+        let Some(server) = self.server else {
+            return Err(Error::ResourceInfoLackOfRequiredField("server".to_string()));
+        };
+        Ok(DiskInfo {
+            name: name,
+            description: self.description,
+            plan: plan,
+            source_archive: source_archive,
+            size_mb: size_mb,
+            connection: self.connection,
+            server: server,
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum DiskConnection {
+    #[serde(rename = "virtio")]
+    Virtio,
+
+    #[serde(rename = "ide")]
+    Ide,
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct DiskConfig {
+    #[serde(rename = "Password", skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+
+    #[serde(rename = "HostName", skip_serializing_if = "Option::is_none")]
+    host_name: Option<String>,
+
+    #[serde(rename = "SSHKeys")]
+    ssh_keys: Vec<SshPublicKeyRef>,
+
+    #[serde(rename = "ChangePartitionUUID", default)]
+    change_partition_uuid: bool,
+
+    #[serde(rename = "DisablePWAuth", default)]
+    disable_pw_auth: bool,
+
+    #[serde(rename = "UserIPAddress")]
+    user_ip_address: Ipv4Addr,
+
+    #[serde(rename = "UserIpv4Net")]
+    user_subnet: Ipv4Net,
+
+    #[serde(rename = "EnableDHCP", default)]
+    enable_dhcp: bool,
+
+    #[serde(rename = "Notes", default)]
+    notes: Vec<NoteRef>,
+}
+
+impl DiskConfig {
+    pub(crate) fn builder() -> DiskConfigBuilder {
+        DiskConfigBuilder::new() 
+    }
+
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Disk, e))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DiskConfigBuilder {
+    password: Option<String>,
+    host_name: Option<String>,
+    ssh_keys: Vec<SshPublicKeyRef>,
+    change_partition_uuid: bool,
+    disable_pw_auth: bool,
+    user_ip_address: Option<Ipv4Addr>,
+    user_subnet: Option<Ipv4Net>,
+    enable_dhcp: bool,
+    notes: Vec<NoteRef>,
+}
+
+impl DiskConfigBuilder {
+    fn new() -> Self {
+        Self {
+            password: None,
+            host_name: None,
+            ssh_keys: Vec::new(),
+            change_partition_uuid: false,
+            disable_pw_auth: false,
+            user_ip_address: None,
+            user_subnet: None,
+            enable_dhcp: false,
+            notes: Vec::new(),
+        }
+    }
+
+    pub(crate) fn password(mut self, password: impl Into<String>) -> Self {
+        self.password = Some(password.into());
+        self
+    }
+
+    pub(crate) fn host_name(mut self, host_name: impl Into<String>) -> Self {
+        self.host_name = Some(host_name.into());
+        self
+    }
+
+    pub(crate) fn ssh_key_ids(mut self, ssh_key_ids: Vec<SshPublicKeyId>) -> Self {
+        self.ssh_keys = ssh_key_ids.into_iter().map(|id| SshPublicKeyRef { id }).collect();
+        self
+    }
+
+    pub(crate) fn change_partition_uuid(mut self, change_partition_uuid: bool) -> Self {
+        self.change_partition_uuid = change_partition_uuid;
+        self
+    }
+
+    pub(crate) fn disable_pw_auth(mut self, disable_pw_auth: bool) -> Self {
+        self.disable_pw_auth = disable_pw_auth;
+        self
+    }
+
+    pub(crate) fn user_ip_address(mut self, user_ip_address: Ipv4Addr) -> Self {
+        self.user_ip_address = Some(user_ip_address);
+        self
+    }
+
+    pub(crate) fn user_subnet(mut self, user_subnet: Ipv4Net) -> Self {
+        self.user_subnet = Some(user_subnet);
+        self
+    }
+
+    pub(crate) fn enable_dhcp(mut self, enable_dhcp: bool) -> Self {
+        self.enable_dhcp = enable_dhcp;
+        self
+    }
+    
+    pub(crate) fn note_id_and_variables_pairs(mut self, note_ids: Vec<(NoteId, Value)>) -> Self {
+        self.notes = note_ids.into_iter().map(|(id, variables)| NoteRef::new(id, variables)).collect();
+        self
+    }
+
+    pub(crate) fn build(self) -> Result<DiskConfig, Error> {
+        if self.ssh_keys.is_empty() {
+            return Err(Error::ResourceInfoLackOfRequiredField("ssh_keys".to_string()));
+        }
+        let Some(user_ip_address) = self.user_ip_address else {
+            return Err(Error::ResourceInfoLackOfRequiredField("user_ip_address".to_string()));
+        };
+        let Some(user_subnet) = self.user_subnet else {
+            return Err(Error::ResourceInfoLackOfRequiredField("user_subnet".to_string()));
+        };
+        if self.password.is_some() && self.disable_pw_auth {
+            return Err(Error::ResourceInfoPasswordGivenButPwAuthDisabled);
+        }
+        if self.password.is_none() && !self.disable_pw_auth {
+            return Err(Error::ResourceInfoPasswordNotGivenButPwAuthEnabled);
+        }
+
+        Ok(DiskConfig {
+            password: self.password,
+            host_name: self.host_name,
+            ssh_keys: self.ssh_keys,
+            change_partition_uuid: self.change_partition_uuid,
+            disable_pw_auth: self.disable_pw_auth,
+            user_ip_address: user_ip_address,
+            user_subnet: user_subnet,
+            enable_dhcp: self.enable_dhcp,
+            notes: self.notes,
+        })
+    }
+}
+
+// DiskPlan
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DiskPlanId(u64);
+
+impl fmt::Display for DiskPlanId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for DiskPlanId {
+    fn from(s: String) -> Self {
+        Self(s.parse().unwrap())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct DiskPlanRef {
+    #[serde(rename = "ID")]
+    id: DiskPlanId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct DiskPlan {
+    #[serde(rename = "ID")]
+    id: DiskPlanId,
+}
+
+impl DiskPlan {
+    pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
+        let resource_value = ResourceKind::DiskPlan.search_by_name(name).await?;
+        resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
+    }
+
+    pub(crate) async fn wait_available(disk_plan_id: impl Borrow<DiskPlanId>) -> Result<(), Error> {
+        let disk_plan_id = disk_plan_id.borrow();
+        ResourceKind::DiskPlan.wait_available(disk_plan_id.to_string()).await
+    }
+
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::DiskPlan, e))
+    }
+
+    pub(crate) fn kind() -> ResourceKind {
+        ResourceKind::DiskPlan
+    }
+
+    pub(crate) fn id(&self) -> &DiskPlanId {
+        &self.id
     }
 }
 
@@ -661,9 +1010,6 @@ impl Resource<DiskId> for Disk {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SshPublicKeyId(String);
-
-impl ResourceId for SshPublicKeyId {
-}
 
 impl fmt::Display for SshPublicKeyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -678,46 +1024,219 @@ impl From<String> for SshPublicKeyId {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SshPublicKeyRef {
+    #[serde(rename = "ID")]
+    id: SshPublicKeyId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SshPublicKey {
-    #[serde(rename = "ID", default)]
-    id: Option<SshPublicKeyId>,
+    #[serde(rename = "ID")]
+    id: SshPublicKeyId,
+
+    #[serde(flatten)]
+    info: SshPublicKeyInfo,
+}
+
+impl SshPublicKey {
+    pub(crate) fn public_key(&self) -> &str {
+        &self.info.public_key   
+    }
+
+    pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
+        let resource_value = ResourceKind::SshPublicKey.search_by_name(name).await?;
+        resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
+    }
+
+    pub(crate) async fn create(info: SshPublicKeyInfo) -> Result<SshPublicKey, Error> {
+        let req_value = info.to_value()?;
+        let res_value = ResourceKind::SshPublicKey.create(req_value).await?;
+        SshPublicKey::from_value(res_value)
+    }
+
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::SshPublicKey, e))
+    }
+
+    pub(crate) fn kind() -> ResourceKind {
+        ResourceKind::SshPublicKey
+    }
+
+    pub(crate) fn id(&self) -> &SshPublicKeyId {
+        &self.id
+    }
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SshPublicKeyInfo {
+    #[serde(rename = "Name")]
+    name: String,
+
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 
     #[serde(rename = "PublicKey")]
     public_key: String,
 }
 
-impl SshPublicKey {
-    pub(crate) fn public_key(&self) -> &str {
-        &self.public_key
-    }
-    pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
-        let resource_value = ResourceKind::SshPublicKey.search_by_name(name).await?;
-        resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
-    }
-}
-
-impl Resource<SshPublicKeyId> for SshPublicKey {
-    fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::SshPublicKey, e))
+impl SshPublicKeyInfo {
+    pub(crate) fn builder() -> SshPublicKeyInfoBuilder {
+        SshPublicKeyInfoBuilder::new()
     }
 
-    fn to_value(&self) -> Result<Value, Error> {
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
         serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::SshPublicKey, e))
     }
+}
 
-    fn kind() -> ResourceKind {
-        ResourceKind::SshPublicKey
+#[derive(Debug)]
+pub(crate) struct SshPublicKeyInfoBuilder {
+    name: Option<String>,
+    description: Option<String>,
+    public_key: Option<String>,
+}
+
+impl SshPublicKeyInfoBuilder {
+    fn new() -> Self {
+        Self {
+            name: None,
+            description: None,
+            public_key: None,
+        }
     }
 
-    fn id(&self) -> &SshPublicKeyId {
-        &self.id.expect("expect id if this function is called")
+    pub(crate) fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub(crate) fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub(crate) fn public_key(mut self, public_key: impl Into<String>) -> Self {
+        self.public_key = Some(public_key.into());
+        self
+    }
+
+    pub(crate) fn build(self) -> Result<SshPublicKeyInfo, Error> {
+        let Some(name) = self.name else {
+            return Err(Error::ResourceInfoLackOfRequiredField("name".to_string()));
+        };
+        let Some(public_key) = self.public_key else {
+            return Err(Error::ResourceInfoLackOfRequiredField("public_key".to_string()));
+        };
+        Ok(SshPublicKeyInfo {
+            name: name,
+            description: self.description,
+            public_key: public_key,
+        })
     }
 }
 
+// Note
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NoteId(String);
+
+impl fmt::Display for NoteId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for NoteId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct NoteRef {
+    #[serde(rename = "ID")]
+    id: NoteId,
+
+    #[serde(rename = "Variables")]
+    variables: Value,
+}
+
+impl NoteRef {
+    pub(crate) fn new(id: NoteId, variables: Value) -> Self {
+        Self {
+            id: id,
+            variables: variables,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Note {
+    #[serde(rename = "ID")]
+    id: NoteId,
+}
+
+impl Note {
+    pub(crate) async fn official_startup_script() -> Result<Note, Error> {
+        let resource_value = ResourceKind::Note.search_by_name("sys-startup-preinstall").await?;
+        let Some(resource_value) = resource_value else {
+            return Err(Error::ResourceNotFound("Note".to_string()));
+        };
+        Note::from_value(resource_value)
+    }
+
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Note, e))
+    }
+
+    pub(crate) fn kind() -> ResourceKind {
+        ResourceKind::Note
+    }
+
+    pub(crate) fn id(&self) -> &NoteId {
+        &self.id
+    }
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct IpAddressRef {
+    #[serde(rename = "IPAddress")]
+    ip_address: Ipv4Addr,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Ipv4Net {
+    #[serde(rename = "DefaultRoute")]
+    default_route: Ipv4Addr,
+
+    #[serde(rename = "NetworkMaskLen")]
+    network_mask_len: u8,
+}
+
+impl Ipv4Net {
+    pub(crate) fn new(default_route: Ipv4Addr, network_mask_len: u8) -> Self {
+        Self {
+            default_route: default_route,
+            network_mask_len: network_mask_len,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SingleLineIpv4Net(String);
+
+impl SingleLineIpv4Net {
+    pub(crate) fn new(ip_address: Ipv4Addr, network_mask_len: u8) -> Self {
+        let subnet = format!("{}/{}", ip_address, network_mask_len);
+        Self(subnet)
+    }
+}
 
 // InterfaceDriver
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum InterfaceDriver {
+pub(crate) enum InterfaceDriver {
     #[serde(rename = "virtio")]
     Virtio,
 
@@ -1011,5 +1530,14 @@ async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value
     let value = res.json().await.map_err(|e| Error::InvalidResponseJson(e, path.to_string(), body.clone()))?;
     log::trace!("END API REQUEST: value={:?}", value);
     Ok(value)
+}
+
+// test
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn server_serializable() {
+
+    }
 }
 
