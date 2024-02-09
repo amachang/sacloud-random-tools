@@ -120,30 +120,41 @@ impl UpdateCmd {
             switch
         };
 
-        log::info!("[START] vpc router booting...");
-        Appliance::up(vpc_router.id()).await?;
-        Appliance::wait_up(vpc_router.id()).await?;
-        log::info!("[DONE] vpc router booted, ok");
+        if vpc_router.is_up() {
+            log::info!("[CHECKED] vpc router up check: ok");
+        } else {
+            log::info!("[START] vpc router booting...");
+            Appliance::up(vpc_router.id()).await?;
+            Appliance::wait_up(vpc_router.id()).await?;
+            log::info!("[DONE] vpc router booted, ok");
+        }
 
         Appliance::wait_available(vpc_router.id()).await?;
+        log::info!("[CHECKED] vpc router availability check: ok");
 
         // Server
         let server = if let Some(server) = server {
+            log::info!("[CHECKED] server existence check: already exists, id: {}, ok", server.id());
             let is_connected = Server::is_connected_to_switch(server.id(), switch.id()).await?;
             if !is_connected {
                 return Err(Error::PrimaryServerNotConnectedToSwitch(server.id().clone(), switch.id().clone()))
             }
+            log::info!("[CHECKED] server connection check: connected to switch, ok");
             server
         } else {
+            log::info!("[START] server existence check: not exists, creating...");
             let server = PrimaryServer::create(prefix, switch.id()).await?;
+            log::info!("[DONE] server created, id: {}, ok", server.id());
             server
         };
 
         // Disk
         let disk = if let Some(disk) = PrimaryServerDisk::try_get(prefix).await? {
+            log::info!("[CHECKED] disk existence check: already exists, id: {}, ok", disk.id());
             disk
         } else {
             let ssh_public_key = if let Some(current_ssh_public_key) = PrimaryServerSshPublicKey::try_get(prefix).await? {
+                log::info!("[CHECKED] ssh public key existence check: already exists, id: {}, ok", current_ssh_public_key.id());
                 if let Some(ssh_public_key) = ssh_public_key {
                     if current_ssh_public_key.public_key() != ssh_public_key {
                         // 同名の古い公開鍵を消していいのかわからないのでエラーにする
@@ -154,28 +165,54 @@ impl UpdateCmd {
                         ));
                     }
                 }
+                log::info!("[CHECKED] ssh public key mismatch check: ok");
                 current_ssh_public_key
             } else {
+                log::info!("[CHECKED] ssh public key existence check: not exists");
                 let Some(ssh_public_key) = ssh_public_key else {
                     return Err(Error::PrimarySshPublicKeyNotGivenForNewServerDisk);
                 };
+                log::info!("[START] ssh public key existence check: not exists, creating...");
                 let ssh_public_key = PrimaryServerSshPublicKey::create(prefix, ssh_public_key).await?;
+                log::info!("[DONE] ssh public key created, id: {}, ok", ssh_public_key.id());
                 ssh_public_key
             };
+
+            log::info!("[START] search latest public ubuntu archive...");
             let archive = Archive::latest_public_ubuntu().await?;
+            log::info!("[DONE] search latest public ubuntu archive, id: {}, ok", archive.id());
+
+            log::info!("[START] disk existence check: not exists, creating...");
             let disk = PrimaryServerDisk::create_for_server(prefix, server.id(), archive.id(), ssh_public_key.id(), password).await?;
+            log::info!("[DONE] disk created, id: {}, ok", disk.id());
             disk
         };
         Disk::wait_available(disk.id()).await?;
-        Server::wait_available(server.id()).await?;
+        log::info!("[CHECKED] disk availability check: ok");
 
-        Server::up(server.id()).await?;
-        Server::wait_up(server.id()).await?;
         Server::wait_available(server.id()).await?;
+        log::info!("[CHECKED] server availability check: ok");
 
+        if server.is_up() {
+            log::info!("[CHECKED] server up check: ok");
+        } else {
+            log::info!("[START] server booting...");
+            Server::up(server.id()).await?;
+            Server::wait_up(server.id()).await?;
+            log::info!("[DONE] server booted, ok");
+        }
+        Server::wait_available(server.id()).await?;
+        log::info!("[CHECKED] server availability check: ok");
+
+        log::info!("[START] vpc router config updating...");
         PrimaryVpcRouter::update_config(vpc_router.id()).await?;
         Appliance::apply_config(vpc_router.id()).await?;
+        log::info!("[DONE] vpc router config updated, ok");
+
         Appliance::wait_available(vpc_router.id()).await?;
+        log::info!("[CHECKED] vpc router availability check: ok");
+
+        log::info!("[DONE] all checks passed, ok");
         Ok(())
     }
 }

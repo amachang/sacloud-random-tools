@@ -146,11 +146,45 @@ impl ResourceKind {
     }
 }
 
+// string id and integer id are both is OK in SakuraCloud API
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ResourceId {
+    String(String),
+    Integer(u64),
+}
+
+impl fmt::Display for ResourceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::String(s) => write!(f, "{}", s),
+            Self::Integer(n) => write!(f, "{}", n),
+        }
+    }
+}
+
+impl From<&str> for ResourceId {
+    fn from(s: &str) -> Self {
+        Self::String(s.to_string())
+    }
+}
+
+impl From<String> for ResourceId {
+    fn from(s: String) -> Self {
+        Self::String(s)
+    }
+}
+
+impl From<u64> for ResourceId {
+    fn from(n: u64) -> Self {
+        Self::Integer(n)
+    }
+}
 
 // Archive
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ArchiveId(pub(crate) String);
+pub(crate) struct ArchiveId(pub ResourceId);
 
 impl fmt::Display for ArchiveId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -160,7 +194,7 @@ impl fmt::Display for ArchiveId {
 
 impl From<String> for ArchiveId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -204,7 +238,7 @@ impl Archive {
 // Server
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ServerId(pub(crate) String);
+pub(crate) struct ServerId(pub ResourceId);
 
 impl fmt::Display for ServerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -214,7 +248,7 @@ impl fmt::Display for ServerId {
 
 impl From<String> for ServerId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -228,6 +262,9 @@ pub(crate) struct ServerRef {
 pub(crate) struct Server {
     #[serde(rename = "ID")]
     id: ServerId,
+
+    #[serde(rename = "Instance")]
+    instance: Instance,
 
     #[serde(flatten)]
     info: ServerInfo,
@@ -280,6 +317,10 @@ impl Server {
     pub(crate) fn id(&self) -> &ServerId {
         &self.id
     }
+
+    pub(crate) fn is_up(&self) -> bool {
+        self.instance.status == InstanceStatus::Up
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,7 +339,6 @@ pub(crate) struct ServerInfo {
 
     #[serde(rename = "InterfaceDriver", skip_serializing_if = "Option::is_none")]
     interface_driver: Option<InterfaceDriver>,
-
 
     // XXX probably used follows only creation time
 
@@ -438,7 +478,7 @@ impl ServerInfoBuilder {
 // ServerPlan
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ServerPlanId(pub(crate) String);
+pub(crate) struct ServerPlanId(pub ResourceId);
 
 impl fmt::Display for ServerPlanId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -448,7 +488,7 @@ impl fmt::Display for ServerPlanId {
 
 impl From<String> for ServerPlanId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -485,7 +525,7 @@ impl ServerPlan {
 // Switch
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SwitchId(pub(crate) String);
+pub(crate) struct SwitchId(pub ResourceId);
 
 impl fmt::Display for SwitchId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -495,7 +535,7 @@ impl fmt::Display for SwitchId {
 
 impl From<String> for SwitchId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -617,7 +657,7 @@ impl SwitchInfoBuilder {
 // Appliance
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ApplianceId(pub(crate) String);
+pub(crate) struct ApplianceId(pub ResourceId);
 
 impl fmt::Display for ApplianceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -627,7 +667,7 @@ impl fmt::Display for ApplianceId {
 
 impl From<String> for ApplianceId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -635,6 +675,12 @@ impl From<String> for ApplianceId {
 pub(crate) struct Appliance {
     #[serde(rename = "ID")]
     id: ApplianceId,
+
+    #[serde(rename = "Instance")]
+    instance: Instance,
+
+    #[serde(flatten)]
+    info: ApplianceInfo,
 }
 
 impl Appliance {
@@ -700,6 +746,10 @@ impl Appliance {
 
     pub(crate) fn id(&self) -> &ApplianceId {
         &self.id
+    }
+
+    pub(crate) fn is_up(&self) -> bool {
+        self.instance.status == InstanceStatus::Up
     }
 }
 
@@ -856,11 +906,11 @@ impl VpcRouterInfoBuilder {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct VpcRouterPlanId(pub(crate) u64);
+pub(crate) struct VpcRouterPlanId(pub ResourceId);
 
 impl VpcRouterPlanId {
     pub(crate) fn new(id: u64) -> Self {
-        Self(id)
+        Self(id.into())
     }
 }
 
@@ -874,7 +924,7 @@ pub(crate) struct VpcRouterPlanRef {
 // Disk
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DiskId(pub(crate) String);
+pub(crate) struct DiskId(pub ResourceId);
 
 impl fmt::Display for DiskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -884,7 +934,7 @@ impl fmt::Display for DiskId {
 
 impl From<String> for DiskId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -1179,7 +1229,7 @@ impl DiskConfigBuilder {
 // DiskPlan
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DiskPlanId(pub(crate) u64);
+pub(crate) struct DiskPlanId(pub ResourceId);
 
 impl fmt::Display for DiskPlanId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1189,7 +1239,7 @@ impl fmt::Display for DiskPlanId {
 
 impl From<String> for DiskPlanId {
     fn from(s: String) -> Self {
-        Self(s.parse().unwrap())
+        Self(s.into())
     }
 }
 
@@ -1235,7 +1285,7 @@ impl DiskPlan {
 // SshPublicKey
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SshPublicKeyId(pub(crate) String);
+pub(crate) struct SshPublicKeyId(pub ResourceId);
 
 impl fmt::Display for SshPublicKeyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1245,7 +1295,7 @@ impl fmt::Display for SshPublicKeyId {
 
 impl From<String> for SshPublicKeyId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -1361,7 +1411,7 @@ impl SshPublicKeyInfoBuilder {
 // Note
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct NoteId(pub(crate) String);
+pub(crate) struct NoteId(pub ResourceId);
 
 impl fmt::Display for NoteId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1371,7 +1421,7 @@ impl fmt::Display for NoteId {
 
 impl From<String> for NoteId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
@@ -1465,6 +1515,24 @@ impl Default for InterfaceDriver {
     fn default() -> Self {
         Self::Virtio
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Instance {
+    #[serde(rename = "Status")]
+    status: InstanceStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum InstanceStatus {
+    #[serde(rename = "cleaning")]
+    Cleaning,
+
+    #[serde(rename = "up")]
+    Up,
+
+    #[serde(rename = "down")]
+    Down,
 }
 
 // Utils
@@ -1685,7 +1753,7 @@ async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value
             ()
         },
         status_code => {
-            log::trace!("ERROR API REQUEST: response={:?}", res);
+            log::trace!("ERROR API REQUEST: response={}", res.text().await.unwrap_or_default());
             match status_code {
                 StatusCode::BAD_REQUEST => {
                     // 400 Bad Request	リクエストパラメータが不正等。 例：許可されないフィールドに対し、負の値、過去の日付、異なる型の値等が指定されている
@@ -1740,14 +1808,14 @@ async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value
                     return Err(Error::ApiServiceUnavailable(path.to_string(), body.clone()));
                 },
                 _ => {
-                    return Err(Error::ApiUnknownStatusCode(res.status().as_u16(), path.to_string(), body.clone()));
+                    return Err(Error::ApiUnknownStatusCode(status_code.as_u16(), path.to_string(), body.clone()));
                 },
             }
         },
     }
 
     let value = res.json().await.map_err(|e| Error::InvalidResponseJson(e.to_string(), path.to_string(), body.clone()))?;
-    log::trace!("END API REQUEST: value={:?}", value);
+    log::trace!("END API REQUEST: value={}", serde_json::to_string_pretty(&value).unwrap_or_default());
     Ok(value)
 }
 
@@ -1794,6 +1862,7 @@ mod tests {
             "ConnectedSwitches": [{ "ID": "SWITCH_ID" }],
             "InterfaceDriver": "virtio",
             "WaitDiskMigration": true,
+            "Instance": { "Status": "up" },
             "UnknowField": "UNKNOWN",
         })).unwrap();
         assert_eq!(server.id(), &server_id);
@@ -1830,7 +1899,7 @@ mod tests {
         let disk_id = DiskId("DISK_ID".into());
         let name = "NAME".to_string();
         let description = "DESCRIPTION".to_string();
-        let disk_plan_id = DiskPlanId(111);
+        let disk_plan_id = DiskPlanId(111.into());
         let archive_id = ArchiveId("ARCHIVE_ID".into());
         let server_id = ServerId("SERVER_ID".into());
         let ssh_public_key_id = SshPublicKeyId("SSH_PUBLIC_KEY_ID".into());

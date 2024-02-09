@@ -16,7 +16,7 @@ use crate::api::{
 };
 
 static SERVER_PLAN_ID: Lazy<ServerPlanId> = Lazy::new(|| ServerPlanId("100001001".into()));
-static DISK_PLAN_ID: Lazy<DiskPlanId> = Lazy::new(|| DiskPlanId(4));
+static DISK_PLAN_ID: Lazy<DiskPlanId> = Lazy::new(|| DiskPlanId(4.into()));
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +78,10 @@ impl PrimaryServer {
 
     pub(crate) fn id(&self) -> &ServerId {
         self.server.id()
+    }
+
+    pub(crate) fn is_up(&self) -> bool {
+        self.server.is_up()
     }
 }
 
@@ -334,6 +338,10 @@ impl PrimaryVpcRouter {
 
     pub(crate) fn id(&self) -> &ApplianceId {
         self.appliance.id()
+    }
+
+    pub(crate) fn is_up(&self) -> bool {
+        self.appliance.is_up()
     }
 }
 
