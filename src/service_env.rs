@@ -338,7 +338,7 @@ impl PrimaryVpcRouter {
 }
 
 
-/*
+/* TODO remove old code
 async fn create_vpc_router(prefix: impl AsRef<str>) -> Result<(String, Value), Error> {
     let name = vpc_router_name(prefix);
     // InternetConnection の Enabled は "True" など、文字列で指定する。 bool だと BadRequest になる。
