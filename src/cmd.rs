@@ -7,7 +7,7 @@ use crate::{
     api::{
         self,
         Server, ServerId,
-        Switch, SwitchId,
+        SwitchId,
         SshPublicKeyId,
         Appliance, ApplianceId,
         Archive,
@@ -25,6 +25,7 @@ use crate::{
 #[derive(Debug, Serialize)]
 pub(crate) enum Error {
     PrimaryServerNotConnectedToSwitch(ServerId, SwitchId),
+    PrimaryServerNotFoundAndNeedsToBeCreatedButLoginMethodNotGiven,
     PrimarySwitchNotConnectedToVpcRouter(SwitchId, ApplianceId),
     PrimarySshPublicKeyAlreadyRegisteredButMismatch(SshPublicKeyId, String, String),
     PrimarySshPublicKeyNotGivenForNewServerDisk,
@@ -66,6 +67,9 @@ pub(crate) struct UpdateCmd {
 impl UpdateCmd {
     pub(crate) async fn run(&self) -> Result<(), Error> {
         let prefix = self.prefix.as_str();
+
+        let login_method_supplies = self.pubkey.is_some() || self.password.is_some();
+
         let ssh_public_key = if let Some(ssh_public_key_path) = &self.pubkey {
             match fs::read_to_string(ssh_public_key_path).await {
                 Ok(ssh_public_key) => Some(ssh_public_key),
@@ -74,38 +78,57 @@ impl UpdateCmd {
         } else {
             None
         };
-
         let password = self.password.as_deref();
+
+        let server = PrimaryServer::try_get(prefix).await?;
+        if server.is_none() {
+            if !login_method_supplies {
+                return Err(Error::PrimaryServerNotFoundAndNeedsToBeCreatedButLoginMethodNotGiven);
+            }
+            log::info!("[CHECKED] login method check for server creation: ok");
+        }
 
         // VPC Router
         let vpc_router = if let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? {
+            log::info!("[CHECKED] vpc router existence check: already exists, id: {}, ok", vpc_router.id());
             vpc_router
         } else {
+            log::info!("[START] vpc router existence check: not exists, creating...");
             let vpc_router = PrimaryVpcRouter::create(prefix).await?;
+            log::info!("[DONE] vpc router created, id: {}, ok", vpc_router.id());
             vpc_router
         };
         Appliance::wait_available(vpc_router.id()).await?;
+        log::info!("[CHECKED] vpc router availability check: ok");
 
         // Switch
         let switch = if let Some(switch) = PrimarySwitch::try_get(prefix).await? {
+            log::info!("[CHECKED] switch existence check: already exists, id: {}, ok", switch.id());
             let is_connected = Appliance::is_connected_to_switch(vpc_router.id(), switch.id()).await?;
             if !is_connected {
                 return Err(Error::PrimarySwitchNotConnectedToVpcRouter(switch.id().clone(), vpc_router.id().clone()))
             }
+            log::info!("[CHECKED] switch connection check: connected to vpc router, ok");
             switch
         } else {
+            log::info!("[START] switch existence check: not exists, creating...");
             let switch = PrimarySwitch::create(prefix).await?;
+            log::info!("[DONE] switch created, id: {}, ok", switch.id());
+            log::info!("[START] switch connection check: connecting to vpc router...");
             Appliance::connect_to_switch(vpc_router.id(), switch.id()).await?;
+            log::info!("[DONE] switch connected to vpc router, ok");
             switch
         };
-        Switch::wait_available(switch.id()).await?;
 
+        log::info!("[START] vpc router booting...");
         Appliance::up(vpc_router.id()).await?;
         Appliance::wait_up(vpc_router.id()).await?;
+        log::info!("[DONE] vpc router booted, ok");
+
         Appliance::wait_available(vpc_router.id()).await?;
 
         // Server
-        let server = if let Some(server) = PrimaryServer::try_get(prefix).await? {
+        let server = if let Some(server) = server {
             let is_connected = Server::is_connected_to_switch(server.id(), switch.id()).await?;
             if !is_connected {
                 return Err(Error::PrimaryServerNotConnectedToSwitch(server.id().clone(), switch.id().clone()))

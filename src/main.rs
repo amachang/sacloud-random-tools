@@ -1,3 +1,4 @@
+use std::env;
 use clap::Parser;
 use serde_json::to_string_pretty;
 
@@ -13,13 +14,18 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    if env::var(env_logger::DEFAULT_FILTER_ENV).is_ok() {
+        env_logger::init();
+    } else {
+        env_logger::builder().filter_level(log::LevelFilter::Info).init();
+    }
+
     let args = Args::parse();
     match args.cmd.run().await {
         Ok(_) => {},
         Err(e) => {
             // Print the error message as json, so as to show what happens in API
-            eprintln!("Uncaught Error: {}", to_string_pretty(&e).unwrap());
+            log::error!("Uncaught Error: {}", to_string_pretty(&e).unwrap());
         }
     }
 }

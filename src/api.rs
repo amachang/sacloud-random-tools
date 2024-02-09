@@ -548,11 +548,6 @@ impl Switch {
         Ok(appliances)
     }
 
-    pub(crate) async fn wait_available(switch_id: impl Borrow<SwitchId>) -> Result<(), Error> {
-        let switch_id = switch_id.borrow();
-        ResourceKind::Switch.wait_available(switch_id.to_string()).await
-    }
-
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Switch, e.to_string()))
     }
@@ -789,6 +784,7 @@ pub(crate) enum ApplianceClass {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
 pub(crate) enum ApplianceClassInfo {
 
     #[serde(rename = "vpcrouter")]
@@ -1647,7 +1643,7 @@ async fn request_api_for_resource(method: Method, path: impl AsRef<str>, resourc
 
 async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value>, body: &Option<Value>) -> Result<Value, Error> {
     let path = path.as_ref();
-    log::trace!("START API REQUEST: method={:?}, path={}, query={}, body={}", method, path, query.clone().unwrap_or_default(), body.clone().unwrap_or_default());
+    log::trace!("START API REQUEST: method={:?}, path={}, query={}, body={}", method, path, serde_json::to_string_pretty(&query).unwrap_or_default(), serde_json::to_string_pretty(&body).unwrap_or_default());
 
     let mut url = API_BASE_URL.join(path).expect("must be valid url");
     if let Some(query) = query {
