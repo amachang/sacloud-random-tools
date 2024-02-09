@@ -42,9 +42,6 @@ pub(crate) enum Error {
     SearchApiInvalidIndexFrom(Option<u64>, String, Value),
     SearchApiInvalidResourceCount(String, Value),
     SearchApiInvalidResourceArray(Value, String, Value),
-    ResourceInfoLackOfRequiredField(String),
-    ResourceInfoPasswordGivenButPwAuthDisabled,
-    ResourceInfoPasswordNotGivenButPwAuthEnabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +53,7 @@ pub(crate) enum ResourceKind {
     Appliance,
     Archive,
     ServerPlan,
-    DiskPlan,
+    // DiskPlan, commented out because it's not used
     Note,
 }
 
@@ -70,7 +67,7 @@ impl ResourceKind {
             Self::Appliance => "Appliance",
             Self::Archive => "Archive",
             Self::ServerPlan => "ServerPlan",
-            Self::DiskPlan => "DiskPlan",
+            // Self::DiskPlan => "DiskPlan",
             Self::Note => "Note",
         }
     }
@@ -84,7 +81,7 @@ impl ResourceKind {
             Self::Appliance => "Appliances",
             Self::Archive => "Archives",
             Self::ServerPlan => "ServerPlans",
-            Self::DiskPlan => "DiskPlans",
+            // Self::DiskPlan => "DiskPlans",
             Self::Note => "Notes",
         }
     }
@@ -98,7 +95,7 @@ impl ResourceKind {
             Self::Appliance => "appliance",
             Self::Archive => "archive",
             Self::ServerPlan => "product/server",
-            Self::DiskPlan => "product/disk",
+            // Self::DiskPlan => "product/disk",
             Self::Note => "note",
         }
     }
@@ -125,6 +122,12 @@ impl ResourceKind {
         create(path, json!({ resource_name: resource_value }), resource_name).await
     }
 
+    pub(crate) async fn update(&self, resource_id: impl AsRef<str>, resource_value: Value) -> Result<(), Error> {
+        let resource_id = resource_id.as_ref();
+        let path = format!("{}/{}", self.path(), resource_id);
+        update(path, Some(resource_value)).await
+    }
+
     pub(crate) async fn up_resource(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
         let resource_id = resource_id.as_ref();
         update(format!("{}/{}/power", self.path(), resource_id), None).await
@@ -147,7 +150,7 @@ impl ResourceKind {
 // Archive
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ArchiveId(String);
+pub(crate) struct ArchiveId(pub(crate) String);
 
 impl fmt::Display for ArchiveId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -161,13 +164,13 @@ impl From<String> for ArchiveId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ArchiveRef {
     #[serde(rename = "ID")]
     id: ArchiveId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Archive {
     #[serde(rename = "ID")]
     id: ArchiveId,
@@ -186,9 +189,11 @@ impl Archive {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Archive, e))
     }
 
+    /* commented out because it's not used
     pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Archive
     }
+    */
 
     pub(crate) fn id(&self) -> &ArchiveId {
         &self.id
@@ -199,7 +204,7 @@ impl Archive {
 // Server
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ServerId(String);
+pub(crate) struct ServerId(pub(crate) String);
 
 impl fmt::Display for ServerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -213,13 +218,13 @@ impl From<String> for ServerId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServerRef {
     #[serde(rename = "ID")]
     id: ServerId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Server {
     #[serde(rename = "ID")]
     id: ServerId,
@@ -266,22 +271,24 @@ impl Server {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Server, e))
     }
 
+    /* commented out because it's not used
     pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Server
     }
+    */
 
     pub(crate) fn id(&self) -> &ServerId {
         &self.id
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServerInfo {
-    #[serde(rename = "Name")]
-    name: String,
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 
-    #[serde(rename = "ServerPlan")]
-    server_plan: ServerPlanRef,
+    #[serde(rename = "ServerPlan", skip_serializing_if = "Option::is_none")]
+    server_plan: Option<ServerPlanRef>,
 
     #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
     description: Option<String>,
@@ -289,8 +296,8 @@ pub(crate) struct ServerInfo {
     #[serde(rename = "HostName", skip_serializing_if = "Option::is_none")]
     host_name: Option<String>,
 
-    #[serde(rename = "InterfaceDriver", default)]
-    interface_driver: InterfaceDriver,
+    #[serde(rename = "InterfaceDriver", skip_serializing_if = "Option::is_none")]
+    interface_driver: Option<InterfaceDriver>,
 
 
     // XXX probably used follows only creation time
@@ -302,7 +309,7 @@ pub(crate) struct ServerInfo {
     wait_disk_migration: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConnectedSwitch {
     Shared,
     Switch(SwitchRef),
@@ -318,13 +325,43 @@ impl ServerInfo {
     }
 }
 
+impl Serialize for ConnectedSwitch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        match self {
+            Self::Shared => {
+                json!({ "Scope": "shared" }).serialize(serializer)
+            }
+            Self::Switch(switch_ref) => {
+                switch_ref.serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ConnectedSwitch {
+    fn deserialize<D>(deserializer: D) -> Result<ConnectedSwitch, D::Error> where D: serde::Deserializer<'de> {
+        let value = Value::deserialize(deserializer)?;
+        if value.is_object() {
+            let scope = value.get("Scope").and_then(Value::as_str);
+            if scope == Some("shared") {
+                Ok(ConnectedSwitch::Shared)
+            } else {
+                let switch_ref = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ConnectedSwitch::Switch(switch_ref))
+            }
+        } else {
+            Err(serde::de::Error::custom("invalid value type"))
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ServerInfoBuilder {
     name: Option<String>,
     server_plan: Option<ServerPlanRef>,
     description: Option<String>,
     host_name: Option<String>,
-    interface_driver: InterfaceDriver,
+    interface_driver: Option<InterfaceDriver>,
     connected_switches: Option<Vec<ConnectedSwitch>>,
     wait_disk_migration: Option<bool>,
 }
@@ -336,7 +373,7 @@ impl ServerInfoBuilder {
             server_plan: None,
             description: None,
             host_name: None,
-            interface_driver: InterfaceDriver::default(),
+            interface_driver: None,
             connected_switches: None,
             wait_disk_migration: None,
         }
@@ -363,7 +400,7 @@ impl ServerInfoBuilder {
     }
 
     pub(crate) fn interface_driver(mut self, interface_driver: InterfaceDriver) -> Self {
-        self.interface_driver = interface_driver;
+        self.interface_driver = Some(interface_driver);
         self
     }
 
@@ -372,27 +409,28 @@ impl ServerInfoBuilder {
         self
     }
 
+    /* commented out because it's not used
+    pub(crate) fn connect_shared_switch(mut self) -> Self {
+        self.connected_switches = Some(vec![ConnectedSwitch::Shared]);
+        self
+    }
+    */
+
     pub(crate) fn wait_disk_migration(mut self, wait_disk_migration: bool) -> Self {
         self.wait_disk_migration = Some(wait_disk_migration);
         self
     }
 
-    pub(crate) fn build(self) -> Result<ServerInfo, Error> {
-        let Some(name) = self.name else {
-            return Err(Error::ResourceInfoLackOfRequiredField("name".to_string()));
-        };
-        let Some(server_plan) = self.server_plan else {
-            return Err(Error::ResourceInfoLackOfRequiredField("server_plan".to_string()));
-        };
-        Ok(ServerInfo {
-            name: name,
-            server_plan: server_plan,
+    pub(crate) fn build(self) -> ServerInfo {
+        ServerInfo {
+            name: self.name,
+            server_plan: self.server_plan,
             description: self.description,
             host_name: self.host_name,
             interface_driver: self.interface_driver,
             connected_switches: self.connected_switches,
             wait_disk_migration: self.wait_disk_migration,
-        })
+        }
     }
 }
 
@@ -400,7 +438,7 @@ impl ServerInfoBuilder {
 // ServerPlan
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ServerPlanId(String);
+pub(crate) struct ServerPlanId(pub(crate) String);
 
 impl fmt::Display for ServerPlanId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -414,13 +452,14 @@ impl From<String> for ServerPlanId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServerPlanRef {
     #[serde(rename = "ID")]
     id: ServerPlanId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/* commented out because it's not used
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServerPlan {
     #[serde(rename = "ID")]
     id: ServerPlanId,
@@ -439,13 +478,14 @@ impl ServerPlan {
         &self.id
     }
 }
+*/
 
 
 
 // Switch
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SwitchId(String);
+pub(crate) struct SwitchId(pub(crate) String);
 
 impl fmt::Display for SwitchId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -459,22 +499,31 @@ impl From<String> for SwitchId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SwitchRef {
     #[serde(rename = "ID")]
     id: SwitchId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Switch {
     #[serde(rename = "ID")]
     id: SwitchId,
+
+    #[serde(flatten)]
+    info: SwitchInfo,
 }
 
 impl Switch {
     pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
         let resource_value = ResourceKind::Switch.search_by_name(name).await?;
         resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
+    }
+
+    pub(crate) async fn create(info: SwitchInfo) -> Result<Switch, Error> {
+        let info_value = info.to_value()?;
+        let res_value = ResourceKind::Switch.create(info_value).await?;
+        Switch::from_value(res_value)
     }
 
     pub(crate) async fn connected_servers(switch_id: impl Borrow<SwitchId>) -> Result<Vec<Server>, Error> {
@@ -508,20 +557,72 @@ impl Switch {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Switch, e))
     }
 
+    /* commented out because it's not used
     pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Switch
     }
+    */
 
     pub(crate) fn id(&self) -> &SwitchId {
         &self.id
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SwitchInfo {
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+impl SwitchInfo {
+    pub(crate) fn builder() -> SwitchInfoBuilder {
+        SwitchInfoBuilder::new()
+    }
+
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Switch, e))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SwitchInfoBuilder {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+impl SwitchInfoBuilder {
+    fn new() -> Self {
+        Self {
+            name: None,
+            description: None,
+        }
+    }
+
+    pub(crate) fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub(crate) fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub(crate) fn build(self) -> SwitchInfo {
+        SwitchInfo {
+            name: self.name,
+            description: self.description,
+        }
+    }
+}
 
 // Appliance
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ApplianceId(String);
+pub(crate) struct ApplianceId(pub(crate) String);
 
 impl fmt::Display for ApplianceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -535,7 +636,7 @@ impl From<String> for ApplianceId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Appliance {
     #[serde(rename = "ID")]
     id: ApplianceId,
@@ -545,6 +646,18 @@ impl Appliance {
     pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
         let resource_value = ResourceKind::Appliance.search_by_name(name).await?;
         resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
+    }
+
+    pub(crate) async fn create(info: ApplianceInfo) -> Result<Appliance, Error> {
+        let info_value = info.to_value()?;
+        let res_value = ResourceKind::Appliance.create(info_value).await?;
+        Appliance::from_value(res_value)
+    }
+
+    pub(crate) async fn update(appliance_id: impl Borrow<ApplianceId>, info: ApplianceInfo) -> Result<(), Error> {
+        let appliance_id = appliance_id.borrow();
+        let info_value = info.to_value()?;
+        ResourceKind::Appliance.update(appliance_id.to_string(), info_value).await
     }
 
     pub(crate) async fn connect_to_switch(appliance_id: impl Borrow<ApplianceId>, switch_id: impl Borrow<SwitchId>) -> Result<(), Error> {
@@ -584,44 +697,188 @@ impl Appliance {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Appliance, e))
     }
 
+    /* commented out because it's not used
     pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Appliance
     }
+    */
 
     pub(crate) fn id(&self) -> &ApplianceId {
         &self.id
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ApplianceInfo {
-    #[serde(rename = "Name")]
-    name: String,
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 
     #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 
+    #[serde(rename = "Class")]
+    class: Option<ApplianceClass>,
+
     #[serde(flatten)]
-    class: ApplianceClass,
+    class_info: Option<ApplianceClassInfo>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl ApplianceInfo {
+    pub(crate) fn builder() -> ApplianceInfoBuilder {
+        ApplianceInfoBuilder::new()
+    }
+
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Appliance, e))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ApplianceInfoBuilder {
+    name: Option<String>,
+    description: Option<String>,
+    class: Option<ApplianceClass>,
+    class_info: Option<ApplianceClassInfo>,
+}
+
+impl ApplianceInfoBuilder {
+    fn new() -> Self {
+        Self {
+            name: None,
+            description: None,
+            class: None,
+            class_info: None,
+        }
+    }
+
+    pub(crate) fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub(crate) fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub(crate) fn vpc_router(mut self, vpc_router_info: VpcRouterInfo) -> Self {
+        self.class = Some(ApplianceClass::VpcRouter);
+        self.class_info= Some(ApplianceClassInfo::VpcRouter(vpc_router_info));
+        self
+    }
+
+    pub(crate) fn vpc_router_info(mut self, vpc_router_info: VpcRouterInfo) -> Self {
+        self.class_info= Some(ApplianceClassInfo::VpcRouter(vpc_router_info));
+        self
+    }
+
+    pub(crate) fn build(self) -> ApplianceInfo {
+        ApplianceInfo {
+            name: self.name,
+            description: self.description,
+            class: self.class,
+            class_info: self.class_info,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ApplianceClass {
+    #[serde(rename = "vpcrouter")]
+    VpcRouter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ApplianceClassInfo {
 
     #[serde(rename = "vpcrouter")]
     VpcRouter(VpcRouterInfo),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct VpcRouterInfo {
-    #[serde(rename = "Switch")]
-    switch: SwitchRef,
+    #[serde(rename = "Plan", skip_serializing_if = "Option::is_none")]
+    plan: Option<VpcRouterPlanRef>,
+
+    #[serde(rename = "Remark", skip_serializing_if = "Option::is_none")]
+    remark: Option<Value>,
+
+    #[serde(rename = "Settings", skip_serializing_if = "Option::is_none")]
+    settings: Option<Value>,
 }
+
+impl VpcRouterInfo {
+    pub(crate) fn builder() -> VpcRouterInfoBuilder {
+        VpcRouterInfoBuilder::new()
+    }
+
+    /* commented out because it's not used
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Appliance, e))
+    }
+    */
+}
+
+#[derive(Debug)]
+pub(crate) struct VpcRouterInfoBuilder {
+    plan: Option<VpcRouterPlanRef>,
+    remark: Option<Value>,
+    settings: Option<Value>,
+}
+
+impl VpcRouterInfoBuilder {
+    fn new() -> Self {
+        Self {
+            plan: None,
+            remark: None,
+            settings: None,
+        }
+    }
+
+    pub(crate) fn plan_id(mut self, plan_id: VpcRouterPlanId) -> Self {
+        self.plan = Some(VpcRouterPlanRef { id: plan_id });
+        self
+    }
+
+    pub(crate) fn remark(mut self, remark: Value) -> Self {
+        self.remark = Some(remark);
+        self
+    }
+
+    pub(crate) fn settings(mut self, settings: Value) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
+    pub(crate) fn build(self) -> VpcRouterInfo {
+        VpcRouterInfo {
+            plan: self.plan,
+            remark: self.remark,
+            settings: self.settings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct VpcRouterPlanId(pub(crate) u64);
+
+impl VpcRouterPlanId {
+    pub(crate) fn new(id: u64) -> Self {
+        Self(id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct VpcRouterPlanRef {
+    #[serde(rename = "ID")]
+    id: VpcRouterPlanId,
+}
+
 
 // Disk
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DiskId(String);
+pub(crate) struct DiskId(pub(crate) String);
 
 impl fmt::Display for DiskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -635,7 +892,7 @@ impl From<String> for DiskId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Disk {
     #[serde(rename = "ID")]
     id: DiskId,
@@ -668,37 +925,39 @@ impl Disk {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Disk, e))
     }
 
+    /*
     pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Disk
     }
+    */
 
     pub(crate) fn id(&self) -> &DiskId {
         &self.id
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskInfo {
-    #[serde(rename = "Name")]
-    name: String,
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 
     #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 
-    #[serde(rename = "Plan")]
-    plan: DiskPlanRef,
+    #[serde(rename = "Plan", skip_serializing_if = "Option::is_none")]
+    plan: Option<DiskPlanRef>,
 
-    #[serde(rename = "SourceArchive")]
-    source_archive: ArchiveRef,
+    #[serde(rename = "SourceArchive", skip_serializing_if = "Option::is_none")]
+    source_archive: Option<ArchiveRef>,
 
-    #[serde(rename = "SizeMB")]
-    size_mb: u64,
+    #[serde(rename = "SizeMB", skip_serializing_if = "Option::is_none")]
+    size_mb: Option<u64>,
 
-    #[serde(rename = "Connection")]
-    connection: DiskConnection,
+    #[serde(rename = "Connection", skip_serializing_if = "Option::is_none")]
+    connection: Option<DiskConnection>,
 
-    #[serde(rename = "Server")]
-    server: ServerRef,
+    #[serde(rename = "Server", skip_serializing_if = "Option::is_none")]
+    server: Option<ServerRef>,
 }
 
 impl DiskInfo {
@@ -718,7 +977,7 @@ pub(crate) struct DiskInfoBuilder {
     plan: Option<DiskPlanRef>,
     source_archive: Option<ArchiveRef>,
     size_mb: Option<u64>,
-    connection: DiskConnection,
+    connection: Option<DiskConnection>,
     server: Option<ServerRef>,
 }
 
@@ -730,7 +989,7 @@ impl DiskInfoBuilder {
             plan: None,
             source_archive: None,
             size_mb: None,
-            connection: DiskConnection::Virtio,
+            connection: None,
             server: None,
         }
     }
@@ -761,7 +1020,7 @@ impl DiskInfoBuilder {
     }
     
     pub(crate) fn connection(mut self, connection: DiskConnection) -> Self {
-        self.connection = connection;
+        self.connection = Some(connection);
         self
     }
 
@@ -770,35 +1029,20 @@ impl DiskInfoBuilder {
         self
     }
 
-    pub(crate) fn build(self) -> Result<DiskInfo, Error> {
-        let Some(name) = self.name else {
-            return Err(Error::ResourceInfoLackOfRequiredField("name".to_string()));
-        };
-        let Some(plan) = self.plan else {
-            return Err(Error::ResourceInfoLackOfRequiredField("plan".to_string()));
-        };
-        let Some(source_archive) = self.source_archive else {
-            return Err(Error::ResourceInfoLackOfRequiredField("source_archive".to_string()));
-        };
-        let Some(size_mb) = self.size_mb else {
-            return Err(Error::ResourceInfoLackOfRequiredField("size_mb".to_string()));
-        };
-        let Some(server) = self.server else {
-            return Err(Error::ResourceInfoLackOfRequiredField("server".to_string()));
-        };
-        Ok(DiskInfo {
-            name: name,
+    pub(crate) fn build(self) -> DiskInfo {
+        DiskInfo {
+            name: self.name,
             description: self.description,
-            plan: plan,
-            source_archive: source_archive,
-            size_mb: size_mb,
+            plan: self.plan,
+            source_archive: self.source_archive,
+            size_mb: self.size_mb,
             connection: self.connection,
-            server: server,
-        })
+            server: self.server,
+        }
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DiskConnection {
     #[serde(rename = "virtio")]
     Virtio,
@@ -808,7 +1052,7 @@ pub(crate) enum DiskConnection {
 }
 
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskConfig {
     #[serde(rename = "Password", skip_serializing_if = "Option::is_none")]
     password: Option<String>,
@@ -816,26 +1060,26 @@ pub(crate) struct DiskConfig {
     #[serde(rename = "HostName", skip_serializing_if = "Option::is_none")]
     host_name: Option<String>,
 
-    #[serde(rename = "SSHKeys")]
-    ssh_keys: Vec<SshPublicKeyRef>,
+    #[serde(rename = "SSHKeys", skip_serializing_if = "Option::is_none")]
+    ssh_keys: Option<Vec<SshPublicKeyRef>>,
 
-    #[serde(rename = "ChangePartitionUUID", default)]
-    change_partition_uuid: bool,
+    #[serde(rename = "ChangePartitionUUID", skip_serializing_if = "Option::is_none")]
+    change_partition_uuid: Option<bool>,
 
-    #[serde(rename = "DisablePWAuth", default)]
-    disable_pw_auth: bool,
+    #[serde(rename = "DisablePWAuth", skip_serializing_if = "Option::is_none")]
+    disable_pw_auth: Option<bool>,
 
-    #[serde(rename = "UserIPAddress")]
-    user_ip_address: Ipv4Addr,
+    #[serde(rename = "UserIPAddress", skip_serializing_if = "Option::is_none")]
+    user_ip_address: Option<Ipv4Addr>,
 
-    #[serde(rename = "UserIpv4Net")]
-    user_subnet: Ipv4Net,
+    #[serde(rename = "UserSubnet", skip_serializing_if = "Option::is_none")]
+    user_subnet: Option<Ipv4Net>,
 
-    #[serde(rename = "EnableDHCP", default)]
-    enable_dhcp: bool,
+    #[serde(rename = "EnableDHCP", skip_serializing_if = "Option::is_none")]
+    enable_dhcp: Option<bool>,
 
-    #[serde(rename = "Notes", default)]
-    notes: Vec<NoteRef>,
+    #[serde(rename = "Notes", skip_serializing_if = "Option::is_none")]
+    notes: Option<Vec<NoteRef>,>
 }
 
 impl DiskConfig {
@@ -852,13 +1096,13 @@ impl DiskConfig {
 pub(crate) struct DiskConfigBuilder {
     password: Option<String>,
     host_name: Option<String>,
-    ssh_keys: Vec<SshPublicKeyRef>,
-    change_partition_uuid: bool,
-    disable_pw_auth: bool,
+    ssh_keys: Option<Vec<SshPublicKeyRef>>,
+    change_partition_uuid: Option<bool>,
+    disable_pw_auth: Option<bool>,
     user_ip_address: Option<Ipv4Addr>,
     user_subnet: Option<Ipv4Net>,
-    enable_dhcp: bool,
-    notes: Vec<NoteRef>,
+    enable_dhcp: Option<bool>,
+    notes: Option<Vec<NoteRef>>,
 }
 
 impl DiskConfigBuilder {
@@ -866,13 +1110,13 @@ impl DiskConfigBuilder {
         Self {
             password: None,
             host_name: None,
-            ssh_keys: Vec::new(),
-            change_partition_uuid: false,
-            disable_pw_auth: false,
+            ssh_keys: None,
+            change_partition_uuid: None,
+            disable_pw_auth: None,
             user_ip_address: None,
             user_subnet: None,
-            enable_dhcp: false,
-            notes: Vec::new(),
+            enable_dhcp: None,
+            notes: None
         }
     }
 
@@ -887,17 +1131,17 @@ impl DiskConfigBuilder {
     }
 
     pub(crate) fn ssh_key_ids(mut self, ssh_key_ids: Vec<SshPublicKeyId>) -> Self {
-        self.ssh_keys = ssh_key_ids.into_iter().map(|id| SshPublicKeyRef { id }).collect();
+        self.ssh_keys = Some(ssh_key_ids.into_iter().map(|id| SshPublicKeyRef { id }).collect());
         self
     }
 
     pub(crate) fn change_partition_uuid(mut self, change_partition_uuid: bool) -> Self {
-        self.change_partition_uuid = change_partition_uuid;
+        self.change_partition_uuid = Some(change_partition_uuid);
         self
     }
 
     pub(crate) fn disable_pw_auth(mut self, disable_pw_auth: bool) -> Self {
-        self.disable_pw_auth = disable_pw_auth;
+        self.disable_pw_auth = Some(disable_pw_auth);
         self
     }
 
@@ -912,50 +1156,34 @@ impl DiskConfigBuilder {
     }
 
     pub(crate) fn enable_dhcp(mut self, enable_dhcp: bool) -> Self {
-        self.enable_dhcp = enable_dhcp;
+        self.enable_dhcp = Some(enable_dhcp);
         self
     }
     
     pub(crate) fn note_id_and_variables_pairs(mut self, note_ids: Vec<(NoteId, Value)>) -> Self {
-        self.notes = note_ids.into_iter().map(|(id, variables)| NoteRef::new(id, variables)).collect();
+        self.notes = Some(note_ids.into_iter().map(|(id, variables)| NoteRef::new(id, variables)).collect());
         self
     }
 
-    pub(crate) fn build(self) -> Result<DiskConfig, Error> {
-        if self.ssh_keys.is_empty() {
-            return Err(Error::ResourceInfoLackOfRequiredField("ssh_keys".to_string()));
-        }
-        let Some(user_ip_address) = self.user_ip_address else {
-            return Err(Error::ResourceInfoLackOfRequiredField("user_ip_address".to_string()));
-        };
-        let Some(user_subnet) = self.user_subnet else {
-            return Err(Error::ResourceInfoLackOfRequiredField("user_subnet".to_string()));
-        };
-        if self.password.is_some() && self.disable_pw_auth {
-            return Err(Error::ResourceInfoPasswordGivenButPwAuthDisabled);
-        }
-        if self.password.is_none() && !self.disable_pw_auth {
-            return Err(Error::ResourceInfoPasswordNotGivenButPwAuthEnabled);
-        }
-
-        Ok(DiskConfig {
+    pub(crate) fn build(self) -> DiskConfig {
+        DiskConfig {
             password: self.password,
             host_name: self.host_name,
             ssh_keys: self.ssh_keys,
             change_partition_uuid: self.change_partition_uuid,
             disable_pw_auth: self.disable_pw_auth,
-            user_ip_address: user_ip_address,
-            user_subnet: user_subnet,
+            user_ip_address: self.user_ip_address,
+            user_subnet: self.user_subnet,
             enable_dhcp: self.enable_dhcp,
             notes: self.notes,
-        })
+        }
     }
 }
 
 // DiskPlan
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DiskPlanId(u64);
+pub(crate) struct DiskPlanId(pub(crate) u64);
 
 impl fmt::Display for DiskPlanId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -969,13 +1197,14 @@ impl From<String> for DiskPlanId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskPlanRef {
     #[serde(rename = "ID")]
     id: DiskPlanId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/* comment out unused
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskPlan {
     #[serde(rename = "ID")]
     id: DiskPlanId,
@@ -1004,12 +1233,13 @@ impl DiskPlan {
         &self.id
     }
 }
+*/
 
 
 // SshPublicKey
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SshPublicKeyId(String);
+pub(crate) struct SshPublicKeyId(pub(crate) String);
 
 impl fmt::Display for SshPublicKeyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1023,13 +1253,13 @@ impl From<String> for SshPublicKeyId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SshPublicKeyRef {
     #[serde(rename = "ID")]
     id: SshPublicKeyId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SshPublicKey {
     #[serde(rename = "ID")]
     id: SshPublicKeyId,
@@ -1040,7 +1270,7 @@ pub(crate) struct SshPublicKey {
 
 impl SshPublicKey {
     pub(crate) fn public_key(&self) -> &str {
-        &self.info.public_key   
+        &self.info.public_key.as_ref().expect("must be set")
     }
 
     pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
@@ -1058,9 +1288,11 @@ impl SshPublicKey {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::SshPublicKey, e))
     }
 
+    /* commented out because it's not used
     pub(crate) fn kind() -> ResourceKind {
         ResourceKind::SshPublicKey
     }
+    */
 
     pub(crate) fn id(&self) -> &SshPublicKeyId {
         &self.id
@@ -1068,16 +1300,16 @@ impl SshPublicKey {
 }
 
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SshPublicKeyInfo {
-    #[serde(rename = "Name")]
-    name: String,
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 
     #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 
-    #[serde(rename = "PublicKey")]
-    public_key: String,
+    #[serde(rename = "PublicKey", skip_serializing_if = "Option::is_none")]
+    public_key: Option<String>,
 }
 
 impl SshPublicKeyInfo {
@@ -1121,25 +1353,19 @@ impl SshPublicKeyInfoBuilder {
         self
     }
 
-    pub(crate) fn build(self) -> Result<SshPublicKeyInfo, Error> {
-        let Some(name) = self.name else {
-            return Err(Error::ResourceInfoLackOfRequiredField("name".to_string()));
-        };
-        let Some(public_key) = self.public_key else {
-            return Err(Error::ResourceInfoLackOfRequiredField("public_key".to_string()));
-        };
-        Ok(SshPublicKeyInfo {
-            name: name,
+    pub(crate) fn build(self) -> SshPublicKeyInfo {
+        SshPublicKeyInfo {
+            name: self.name,
             description: self.description,
-            public_key: public_key,
-        })
+            public_key: self.public_key,
+        }
     }
 }
 
 // Note
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct NoteId(String);
+pub(crate) struct NoteId(pub(crate) String);
 
 impl fmt::Display for NoteId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1153,7 +1379,7 @@ impl From<String> for NoteId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NoteRef {
     #[serde(rename = "ID")]
     id: NoteId,
@@ -1171,7 +1397,7 @@ impl NoteRef {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Note {
     #[serde(rename = "ID")]
     id: NoteId,
@@ -1190,9 +1416,11 @@ impl Note {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Note, e))
     }
 
+    /* commented out because it's not used
     pub(crate) fn kind() -> ResourceKind {
         ResourceKind::Note
     }
+    */
 
     pub(crate) fn id(&self) -> &NoteId {
         &self.id
@@ -1200,13 +1428,13 @@ impl Note {
 }
 
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct IpAddressRef {
     #[serde(rename = "IPAddress")]
     ip_address: Ipv4Addr,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Ipv4Net {
     #[serde(rename = "DefaultRoute")]
     default_route: Ipv4Addr,
@@ -1224,15 +1452,8 @@ impl Ipv4Net {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct SingleLineIpv4Net(String);
-
-impl SingleLineIpv4Net {
-    pub(crate) fn new(ip_address: Ipv4Addr, network_mask_len: u8) -> Self {
-        let subnet = format!("{}/{}", ip_address, network_mask_len);
-        Self(subnet)
-    }
-}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SingleLineIpv4Net(pub(crate) String);
 
 // InterfaceDriver
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1325,10 +1546,12 @@ async fn update(path: impl AsRef<str>, body: Option<Value>) -> Result<(), Error>
     Ok(())
 }
 
+/* comment out because it's not used
 async fn delete(path: impl AsRef<str>, body: Value) -> Result<(), Error> {
     let _ = request_api_for_resource(Method::DELETE, path, None, Some(body)).await?;
     Ok(())
 }
+*/
 
 async fn search(path: impl AsRef<str>, resource_name: impl AsRef<str>, filter: Option<Value>, sort: Option<Value>, other: Option<Value>, page_count: u64) -> Result<Vec<Value>, Error> {
     let path = path.as_ref();
@@ -1535,9 +1758,213 @@ async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value
 // test
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn server_serializable() {
+    use super::*;
 
+    #[test]
+    fn server_json() {
+        let name = "NAME".to_string();
+        let server_id = ServerId("SERVER_ID".into());
+        let server_plan_id = ServerPlanId("SERVER_PLAN_ID".into());
+        let switch_id = SwitchId("SWITCH_ID".into());
+
+        let server_info = ServerInfo::builder()
+            .name(name.clone())
+            .server_plan(server_plan_id.clone())
+            .description(name.clone())
+            .host_name(name.clone())
+            .connected_switch_ids(vec![switch_id.clone()])
+            .interface_driver(InterfaceDriver::Virtio)
+            .wait_disk_migration(true)
+            .build();
+
+        assert_eq!(json!({ "Server": &server_info }), json!({
+            "Server": {
+                "Name": "NAME",
+                "ServerPlan": { "ID": "SERVER_PLAN_ID" },
+                "Description": "NAME",
+                "HostName": "NAME",
+                "ConnectedSwitches": [{ "ID": "SWITCH_ID" }],
+                "InterfaceDriver": "virtio",
+                "WaitDiskMigration": true,
+            },
+        }));
+
+        let server = Server::from_value(json!({
+            "ID": "SERVER_ID",
+            "Name": "NAME",
+            "ServerPlan": { "ID": "SERVER_PLAN_ID" },
+            "Description": "NAME",
+            "HostName": "NAME",
+            "ConnectedSwitches": [{ "ID": "SWITCH_ID" }],
+            "InterfaceDriver": "virtio",
+            "WaitDiskMigration": true,
+            "UnknowField": "UNKNOWN",
+        })).unwrap();
+        assert_eq!(server.id(), &server_id);
+
+        assert_eq!(server.info, server_info);
+        let mut server_info = ServerInfo::builder()
+            .name(name.clone())
+            .server_plan(server_plan_id.clone())
+            .build();
+        server_info.connected_switches = Some(vec![ConnectedSwitch::Shared]);
+
+        assert_eq!(json!({ "Server": &server_info }), json!({
+            "Server": {
+                "Name": "NAME",
+                "ServerPlan": { "ID": "SERVER_PLAN_ID" },
+                "ConnectedSwitches": [ { "Scope": "shared" } ],
+            },
+        }));
+
+        let server = Server::from_value(json!({
+            "ID": "SERVER_ID",
+            "Name": "NAME",
+            "ServerPlan": { "ID": "SERVER_PLAN_ID" },
+            "ConnectedSwitches": [ { "Scope": "shared" } ],
+            "UnknowField": "UNKNOWN",
+        })).unwrap();
+
+        assert_eq!(server.id(), &server_id);
+        assert_eq!(server.info, server_info);
+    }
+
+    #[test]
+    fn server_disk_json() {
+        let disk_id = DiskId("DISK_ID".into());
+        let name = "NAME".to_string();
+        let description = "DESCRIPTION".to_string();
+        let disk_plan_id = DiskPlanId(111);
+        let archive_id = ArchiveId("ARCHIVE_ID".into());
+        let server_id = ServerId("SERVER_ID".into());
+        let ssh_public_key_id = SshPublicKeyId("SSH_PUBLIC_KEY_ID".into());
+        let password = "PASSWORD".to_string();
+        let note_id = NoteId("NOTE_ID".into());
+
+        let info = DiskInfo::builder()
+            .name(name.clone())
+            .description(description.clone())
+            .plan_id(disk_plan_id.clone())
+            .source_archive_id(archive_id.clone())
+            .size_mb(222)
+            .connection(DiskConnection::Virtio)
+            .server_id(server_id.clone())
+            .build();
+
+        let config = DiskConfig::builder()
+            .host_name(name.clone())
+            .ssh_key_ids(vec![ssh_public_key_id.clone()])
+            .user_ip_address(Ipv4Addr::new(11, 11, 11, 11))
+            .user_subnet(Ipv4Net::new(Ipv4Addr::new(11, 11, 11, 1), 24))
+            .change_partition_uuid(false)
+            .enable_dhcp(false)
+            .note_id_and_variables_pairs(vec![
+                (note_id.clone(), json!({ "usacloud": false, "updatepackage": true }))
+            ])
+            .disable_pw_auth(false)
+            .password(password.clone())
+            .build();
+
+        assert_eq!(serde_json::to_value(json!({ "Disk": &info, "Config": &config })).unwrap(), json!({
+            "Disk": {
+                "Name": "NAME",
+                "Description": "DESCRIPTION",
+                "Plan": { "ID": 111 },
+                "SourceArchive": { "ID": "ARCHIVE_ID" },
+                "SizeMB": 222,
+                "Connection": "virtio",
+                "Server": { "ID": "SERVER_ID" },
+            },
+            "Config":{
+                "Password": "PASSWORD",
+                "HostName": "NAME",
+                "SSHKeys": [{"ID": "SSH_PUBLIC_KEY_ID"}],
+                "ChangePartitionUUID": false,
+                "DisablePWAuth": false,
+                "UserIPAddress":"11.11.11.11",
+                "UserSubnet": { "DefaultRoute": "11.11.11.1", "NetworkMaskLen": 24 },
+                "EnableDHCP": false,
+                "Notes":[ { "ID": "NOTE_ID", "Variables": { "usacloud": false, "updatepackage": true } } ]
+            },
+        }));
+
+
+        let disk = Disk::from_value(json!({
+            "ID": "DISK_ID",
+            "Name": "NAME",
+            "Description": "DESCRIPTION",
+            "Plan": { "ID": 111 },
+            "SourceArchive": { "ID": "ARCHIVE_ID" },
+            "SizeMB": 222,
+            "Connection": "virtio",
+            "Server": { "ID": "SERVER_ID" },
+            "UnknowField": "UNKNOWN",
+        })).unwrap();
+
+        assert_eq!(disk.id(), &disk_id);
+        assert_eq!(disk.info, info);
+    }
+
+    #[test]
+    fn ssh_public_key_json() {
+        let id = SshPublicKeyId("SSH_PUBLIC_KEY_ID".into());
+        let name = "NAME".to_string();
+        let description = "DESCRIPTION".to_string();
+        let public_key = "PUBLIC_KEY".to_string();
+
+        let info = SshPublicKeyInfo::builder()
+            .name(name.clone())
+            .description(description.clone())
+            .public_key(public_key.clone())
+            .build();
+
+        assert_eq!(serde_json::to_value(json!({ "SSHKey": &info })).unwrap(), json!({
+            "SSHKey": {
+                "Name": "NAME",
+                "Description": "DESCRIPTION",
+                "PublicKey": "PUBLIC_KEY",
+            },
+        }));
+
+        let ssh_public_key = SshPublicKey::from_value(json!({
+            "ID": "SSH_PUBLIC_KEY_ID",
+            "Name": "NAME",
+            "Description": "DESCRIPTION",
+            "PublicKey": "PUBLIC_KEY",
+            "UnknowField": "UNKNOWN",
+        })).unwrap();
+
+        assert_eq!(ssh_public_key.id(), &id);
+        assert_eq!(ssh_public_key.info, info);
+    }
+
+    #[test]
+    fn switch_json() {
+        let id = SwitchId("SWITCH_ID".into());
+        let name = "NAME".to_string();
+        let description = "DESCRIPTION".to_string();
+
+        let info = SwitchInfo::builder()
+            .name(name.clone())
+            .description(description.clone())
+            .build();
+
+        assert_eq!(serde_json::to_value(json!({ "Switch": &info })).unwrap(), json!({
+            "Switch": {
+                "Name": "NAME",
+                "Description": "DESCRIPTION",
+            },
+        }));
+
+        let switch = Switch::from_value(json!({
+            "ID": "SWITCH_ID",
+            "Name": "NAME",
+            "Description": "DESCRIPTION",
+            "UnknowField": "UNKNOWN",
+        })).unwrap();
+
+        assert_eq!(switch.id(), &id);
+        assert_eq!(switch.info, info);
     }
 }
 
