@@ -10,20 +10,20 @@ static ACCESS_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_ACCESS_TOKE
 static SECRET_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_SECRET_TOKEN").unwrap() });
 static API_BASE_URL: Lazy<Url> = Lazy::new(|| { Url::parse(format!("https://secure.sakura.ad.jp/cloud/zone/{}/api/cloud/1.1/", env::var("SACLOUD_ZONE").unwrap()).as_str()).unwrap() });
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) enum Error {
     ResourceNotFound(String),
     TooManyResources(String, usize),
-    ResourceSerializationFailed(ResourceKind, serde_json::Error),
-    ResourceDeserializationFailed(ResourceKind, serde_json::Error),
+    ResourceSerializationFailed(ResourceKind, String),
+    ResourceDeserializationFailed(ResourceKind, String),
     ResourceApiInvalidResourceObject(String, Option<Value>),
     ResourceApiInvalidStatusDataType(Value, Value, String, Option<Value>),
     ResourceApiInvalidStatusFalse(Value, String, Option<Value>),
     ResourceApiWaitStatusNotFound(String, Value),
     ResourceApiWaitStatusFailed(String, Value),
     ResourceApiWaitStatusUnknown(String, String, Value),
-    RequestFailed(reqwest::Error, String, Option<Value>),
-    InvalidResponseJson(reqwest::Error, String, Option<Value>),
+    RequestFailed(String, String, Option<Value>),
+    InvalidResponseJson(String, String, Option<Value>),
     ApiBadRequest(String, Option<Value>),
     ApiUnauthorized(String, Option<Value>),
     ApiForbidden(String, Option<Value>),
@@ -37,14 +37,14 @@ pub(crate) enum Error {
     ApiUnsupportedMediaType(String, Option<Value>),
     ApiInternalServerError(String, Option<Value>),
     ApiServiceUnavailable(String, Option<Value>),
-    ApiUnknownStatusCode(StatusCode, String, Option<Value>),
+    ApiUnknownStatusCode(u16, String, Option<Value>),
     SearchApiInvalidTotalCount(String, Value),
     SearchApiInvalidIndexFrom(Option<u64>, String, Value),
     SearchApiInvalidResourceCount(String, Value),
     SearchApiInvalidResourceArray(Value, String, Value),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum ResourceKind {
     Server,
     Disk,
@@ -186,7 +186,7 @@ impl Archive {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Archive, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Archive, e.to_string()))
     }
 
     /* commented out because it's not used
@@ -268,7 +268,7 @@ impl Server {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Server, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Server, e.to_string()))
     }
 
     /* commented out because it's not used
@@ -321,7 +321,7 @@ impl ServerInfo {
     }
 
     pub(crate) fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::ServerPlan, e))
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::ServerPlan, e.to_string()))
     }
 }
 
@@ -467,7 +467,7 @@ pub(crate) struct ServerPlan {
 
 impl ServerPlan {
     pub(crate) fn from_value(value: Value) -> Result<ServerPlan, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::ServerPlan, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::ServerPlan, e.to_string()))
     }
 
     pub(crate) fn kind() -> ResourceKind {
@@ -554,7 +554,7 @@ impl Switch {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Switch, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Switch, e.to_string()))
     }
 
     /* commented out because it's not used
@@ -583,7 +583,7 @@ impl SwitchInfo {
     }
 
     pub(crate) fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Switch, e))
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Switch, e.to_string()))
     }
 }
 
@@ -694,7 +694,7 @@ impl Appliance {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Appliance, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Appliance, e.to_string()))
     }
 
     /* commented out because it's not used
@@ -729,7 +729,7 @@ impl ApplianceInfo {
     }
 
     pub(crate) fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Appliance, e))
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Appliance, e.to_string()))
     }
 }
 
@@ -814,7 +814,7 @@ impl VpcRouterInfo {
 
     /* commented out because it's not used
     pub(crate) fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Appliance, e))
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Appliance, e.to_string()))
     }
     */
 }
@@ -922,7 +922,7 @@ impl Disk {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Disk, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Disk, e.to_string()))
     }
 
     /*
@@ -966,7 +966,7 @@ impl DiskInfo {
     }
 
     pub(crate) fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Disk, e))
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Disk, e.to_string()))
     }
 }
 
@@ -1088,7 +1088,7 @@ impl DiskConfig {
     }
 
     pub(crate) fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Disk, e))
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Disk, e.to_string()))
     }
 }
 
@@ -1222,7 +1222,7 @@ impl DiskPlan {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::DiskPlan, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::DiskPlan, e.to_string()))
     }
 
     pub(crate) fn kind() -> ResourceKind {
@@ -1285,7 +1285,7 @@ impl SshPublicKey {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::SshPublicKey, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::SshPublicKey, e.to_string()))
     }
 
     /* commented out because it's not used
@@ -1318,7 +1318,7 @@ impl SshPublicKeyInfo {
     }
 
     pub(crate) fn to_value(&self) -> Result<Value, Error> {
-        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::SshPublicKey, e))
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::SshPublicKey, e.to_string()))
     }
 }
 
@@ -1413,7 +1413,7 @@ impl Note {
     }
 
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Note, e))
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Note, e.to_string()))
     }
 
     /* commented out because it's not used
@@ -1666,7 +1666,7 @@ async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value
         Ok(res) => res,
         Err(e) => {
             log::trace!("ERROR API REQUEST: error={:?}", e);
-            return Err(Error::RequestFailed(e, path.to_string(), body.clone()));
+            return Err(Error::RequestFailed(e.to_string(), path.to_string(), body.clone()));
         },
     };
 
@@ -1744,13 +1744,13 @@ async fn request_api(method: Method, path: impl AsRef<str>, query: &Option<Value
                     return Err(Error::ApiServiceUnavailable(path.to_string(), body.clone()));
                 },
                 _ => {
-                    return Err(Error::ApiUnknownStatusCode(res.status(), path.to_string(), body.clone()));
+                    return Err(Error::ApiUnknownStatusCode(res.status().as_u16(), path.to_string(), body.clone()));
                 },
             }
         },
     }
 
-    let value = res.json().await.map_err(|e| Error::InvalidResponseJson(e, path.to_string(), body.clone()))?;
+    let value = res.json().await.map_err(|e| Error::InvalidResponseJson(e.to_string(), path.to_string(), body.clone()))?;
     log::trace!("END API REQUEST: value={:?}", value);
     Ok(value)
 }

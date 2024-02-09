@@ -1,6 +1,7 @@
-use std::{path::PathBuf, io};
+use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use tokio::fs;
+use serde::Serialize;
 
 use crate::{
     api::{
@@ -21,13 +22,13 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) enum Error {
     PrimaryServerNotConnectedToSwitch(ServerId, SwitchId),
     PrimarySwitchNotConnectedToVpcRouter(SwitchId, ApplianceId),
     PrimarySshPublicKeyAlreadyRegisteredButMismatch(SshPublicKeyId, String, String),
     PrimarySshPublicKeyNotGivenForNewServerDisk,
-    PrimarySshPublicKeyGivenButCouldntRead(PathBuf, io::Error),
+    PrimarySshPublicKeyGivenButCouldntRead(PathBuf, String),
     ApiError(api::Error),
 }
 
@@ -68,7 +69,7 @@ impl UpdateCmd {
         let ssh_public_key = if let Some(ssh_public_key_path) = &self.pubkey {
             match fs::read_to_string(ssh_public_key_path).await {
                 Ok(ssh_public_key) => Some(ssh_public_key),
-                Err(e) => return Err(Error::PrimarySshPublicKeyGivenButCouldntRead(ssh_public_key_path.clone(), e)),
+                Err(e) => return Err(Error::PrimarySshPublicKeyGivenButCouldntRead(ssh_public_key_path.clone(), e.to_string())),
             }
         } else {
             None

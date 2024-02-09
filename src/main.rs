@@ -1,4 +1,5 @@
 use clap::Parser;
+use serde_json::to_string_pretty;
 
 mod cmd;
 mod api;
@@ -11,9 +12,15 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), cmd::Error> {
+async fn main() {
     env_logger::init();
     let args = Args::parse();
-    args.cmd.run().await
+    match args.cmd.run().await {
+        Ok(_) => {},
+        Err(e) => {
+            // Print the error message as json, so as to show what happens in API
+            eprintln!("Uncaught Error: {}", to_string_pretty(&e).unwrap());
+        }
+    }
 }
 
