@@ -126,7 +126,8 @@ impl ResourceKind {
     pub(crate) async fn update(&self, resource_id: impl AsRef<str>, resource_value: Value) -> Result<(), Error> {
         let resource_id = resource_id.as_ref();
         let path = format!("{}/{}", self.path(), resource_id);
-        update(path, Some(resource_value)).await
+        let resource_name = self.single_name();
+        update(path, Some(json!({ resource_name: resource_value }))).await
     }
 
     pub(crate) async fn up_resource(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
@@ -770,7 +771,7 @@ pub(crate) struct ApplianceInfo {
     #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 
-    #[serde(rename = "Class")]
+    #[serde(rename = "Class", skip_serializing_if = "Option::is_none")]
     class: Option<ApplianceClass>,
 
     #[serde(flatten)]

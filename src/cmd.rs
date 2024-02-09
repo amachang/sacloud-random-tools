@@ -91,15 +91,19 @@ impl UpdateCmd {
         // VPC Router
         let vpc_router = if let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? {
             log::info!("[CHECKED] vpc router existence check: already exists, id: {}, ok", vpc_router.id());
+            Appliance::wait_available(vpc_router.id()).await?;
+            log::info!("[CHECKED] vpc router availability check: ok");
             vpc_router
         } else {
             log::info!("[START] vpc router existence check: not exists, creating...");
             let vpc_router = PrimaryVpcRouter::create(prefix).await?;
             log::info!("[DONE] vpc router created, id: {}, ok", vpc_router.id());
+
+            log::info!("[START] vpc router wait available...");
+            Appliance::wait_available(vpc_router.id()).await?;
+            log::info!("[CHECKED] vpc router available, ok");
             vpc_router
         };
-        Appliance::wait_available(vpc_router.id()).await?;
-        log::info!("[CHECKED] vpc router availability check: ok");
 
         // Switch
         let switch = if let Some(switch) = PrimarySwitch::try_get(prefix).await? {
@@ -122,15 +126,19 @@ impl UpdateCmd {
 
         if vpc_router.is_up()? {
             log::info!("[CHECKED] vpc router up check: ok");
+            Appliance::wait_available(vpc_router.id()).await?;
+            log::info!("[CHECKED] vpc router availability check: ok");
         } else {
             log::info!("[START] vpc router booting...");
             Appliance::up(vpc_router.id()).await?;
             Appliance::wait_up(vpc_router.id()).await?;
             log::info!("[DONE] vpc router booted, ok");
+
+            log::info!("[START] vpc router wait available...");
+            Appliance::wait_available(vpc_router.id()).await?;
+            log::info!("[DONE] vpc router available, ok");
         }
 
-        Appliance::wait_available(vpc_router.id()).await?;
-        log::info!("[CHECKED] vpc router availability check: ok");
 
         // Server
         let server = if let Some(server) = server {
@@ -149,9 +157,10 @@ impl UpdateCmd {
         };
 
         // Disk
-        let disk = if let Some(disk) = PrimaryServerDisk::try_get(prefix).await? {
+        if let Some(disk) = PrimaryServerDisk::try_get(prefix).await? {
             log::info!("[CHECKED] disk existence check: already exists, id: {}, ok", disk.id());
-            disk
+            Disk::wait_available(disk.id()).await?;
+            log::info!("[CHECKED] disk availability check: ok");
         } else {
             let ssh_public_key = if let Some(current_ssh_public_key) = PrimaryServerSshPublicKey::try_get(prefix).await? {
                 log::info!("[CHECKED] ssh public key existence check: already exists, id: {}, ok", current_ssh_public_key.id());
@@ -185,10 +194,11 @@ impl UpdateCmd {
             log::info!("[START] disk existence check: not exists, creating...");
             let disk = PrimaryServerDisk::create_for_server(prefix, server.id(), archive.id(), ssh_public_key.id(), password).await?;
             log::info!("[DONE] disk created, id: {}, ok", disk.id());
-            disk
+
+            log::info!("[START] disk wait available...");
+            Disk::wait_available(disk.id()).await?;
+            log::info!("[DONE] disk available, ok");
         };
-        Disk::wait_available(disk.id()).await?;
-        log::info!("[CHECKED] disk availability check: ok");
 
         Server::wait_available(server.id()).await?;
         log::info!("[CHECKED] server availability check: ok");
