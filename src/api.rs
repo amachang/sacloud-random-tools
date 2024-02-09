@@ -130,9 +130,20 @@ impl ResourceKind {
         update(path, Some(json!({ resource_name: resource_value }))).await
     }
 
+    pub(crate) async fn delete(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
+        let resource_id = resource_id.as_ref();
+        let path = format!("{}/{}", self.path(), resource_id);
+        delete(path, None).await
+    }
+
     pub(crate) async fn up_resource(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
         let resource_id = resource_id.as_ref();
         update(format!("{}/{}/power", self.path(), resource_id), None).await
+    }
+
+    pub(crate) async fn down_resource(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
+        let resource_id = resource_id.as_ref();
+        delete(format!("{}/{}/power", self.path(), resource_id), None).await
     }
 
     pub(crate) async fn wait_available(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
@@ -145,6 +156,18 @@ impl ResourceKind {
         let resource_id = resource_id.as_ref();
         let path = format!("{}/{}", self.path(), resource_id);
         wait_resource_up(&path, self.single_name()).await
+    }
+
+    pub(crate) async fn wait_down(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
+        let resource_id = resource_id.as_ref();
+        let path = format!("{}/{}", self.path(), resource_id);
+        wait_resource_down(&path, self.single_name()).await
+    }
+
+    pub(crate) async fn wait_delete(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
+        let resource_id = resource_id.as_ref();
+        let path = format!("{}/{}", self.path(), resource_id);
+        fetch_until_not_found(&path).await
     }
 }
 
@@ -284,6 +307,16 @@ impl Server {
         Server::from_value(res_value)
     }
 
+    pub(crate) async fn delete(server_id: impl Borrow<ServerId>) -> Result<(), Error> {
+        let server_id = server_id.borrow();
+        ResourceKind::Server.delete(server_id.to_string()).await
+    } 
+
+    pub(crate) async fn wait_delete(server_id: impl Borrow<ServerId>) -> Result<(), Error> {
+        let server_id = server_id.borrow();
+        ResourceKind::Server.wait_delete(server_id.to_string()).await
+    }
+
     pub(crate) async fn is_connected_to_switch(server_id: impl Borrow<ServerId>, switch_id: impl Borrow<SwitchId>) -> Result<bool, Error> {
         let server_id = server_id.borrow();
         let switch_id = switch_id.borrow();
@@ -306,6 +339,16 @@ impl Server {
         ResourceKind::Server.wait_up(server_id.to_string()).await
     }
 
+    pub(crate) async fn down(server_id: impl Borrow<ServerId>) -> Result<(), Error> {
+        let server_id = server_id.borrow();
+        ResourceKind::Server.down_resource(server_id.to_string()).await
+    }
+
+    pub(crate) async fn wait_down(server_id: impl Borrow<ServerId>) -> Result<(), Error> {
+        let server_id = server_id.borrow();
+        ResourceKind::Server.wait_down(server_id.to_string()).await
+    }
+
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Server, e.to_string()))
     }
@@ -320,13 +363,14 @@ impl Server {
         &self.id
     }
 
-    pub(crate) fn is_up(&self) ->Result<bool, Error> {
+    pub(crate) fn instance_status(&self) ->Result<InstanceStatus, Error> {
         if let Some(instance) = &self.instance {
-            Ok(instance.status == InstanceStatus::Up)
+            Ok(instance.status)
         } else {
             Err(Error::ResourceUnknownInstanceStatus)
         }
     }
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -572,6 +616,16 @@ impl Switch {
         Switch::from_value(res_value)
     }
 
+    pub(crate) async fn delete(switch_id: impl Borrow<SwitchId>) -> Result<(), Error> {
+        let switch_id = switch_id.borrow();
+        ResourceKind::Switch.delete(switch_id.to_string()).await
+    } 
+
+    pub(crate) async fn wait_delete(switch_id: impl Borrow<SwitchId>) -> Result<(), Error> {
+        let switch_id = switch_id.borrow();
+        ResourceKind::Switch.wait_delete(switch_id.to_string()).await
+    }
+
     pub(crate) async fn connected_servers(switch_id: impl Borrow<SwitchId>) -> Result<Vec<Server>, Error> {
         let switch_id = switch_id.borrow();
         let resource_values = search(format!("switch/{}/server", switch_id), "Servers", None, None, None, 50).await?;
@@ -707,6 +761,16 @@ impl Appliance {
         ResourceKind::Appliance.update(appliance_id.to_string(), info_value).await
     }
 
+    pub(crate) async fn delete(appliance_id: impl Borrow<ApplianceId>) -> Result<(), Error> {
+        let appliance_id = appliance_id.borrow();
+        ResourceKind::Appliance.delete(appliance_id.to_string()).await
+    } 
+
+    pub(crate) async fn wait_delete(appliance_id: impl Borrow<ApplianceId>) -> Result<(), Error> {
+        let appliance_id = appliance_id.borrow();
+        ResourceKind::Appliance.wait_delete(appliance_id.to_string()).await
+    }
+
     pub(crate) async fn connect_to_switch(appliance_id: impl Borrow<ApplianceId>, switch_id: impl Borrow<SwitchId>) -> Result<(), Error> {
         let appliance_id = appliance_id.borrow();
         let switch_id = switch_id.borrow();
@@ -740,6 +804,16 @@ impl Appliance {
         ResourceKind::Appliance.wait_up(appliance_id.to_string()).await
     }
 
+    pub(crate) async fn down(appliance_id: impl Borrow<ApplianceId>) -> Result<(), Error> {
+        let appliance_id = appliance_id.borrow();
+        ResourceKind::Appliance.down_resource(appliance_id.to_string()).await
+    }
+
+    pub(crate) async fn wait_down(appliance_id: impl Borrow<ApplianceId>) -> Result<(), Error> {
+        let appliance_id = appliance_id.borrow();
+        ResourceKind::Appliance.wait_down(appliance_id.to_string()).await
+    }
+
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Appliance, e.to_string()))
     }
@@ -754,9 +828,9 @@ impl Appliance {
         &self.id
     }
 
-    pub(crate) fn is_up(&self) ->Result<bool, Error> {
+    pub(crate) fn instance_status(&self) ->Result<InstanceStatus, Error> {
         if let Some(instance) = &self.instance {
-            Ok(instance.status == InstanceStatus::Up)
+            Ok(instance.status)
         } else {
             Err(Error::ResourceUnknownInstanceStatus)
         }
@@ -970,6 +1044,16 @@ impl Disk {
         let disk_resource_name = ResourceKind::Disk.single_name();
         let res_value = create(ResourceKind::Disk.path(), json!({ disk_resource_name: info_value, "Config": config_value }), disk_resource_name).await?;
         Disk::from_value(res_value)
+    }
+
+    pub(crate) async fn delete(disk_id: impl Borrow<DiskId>) -> Result<(), Error> {
+        let disk_id = disk_id.borrow();
+        ResourceKind::Disk.delete(disk_id.to_string()).await
+    } 
+
+    pub(crate) async fn wait_delete(disk_id: impl Borrow<DiskId>) -> Result<(), Error> {
+        let disk_id = disk_id.borrow();
+        ResourceKind::Disk.wait_delete(disk_id.to_string()).await
     }
 
     pub(crate) async fn wait_available(disk_id: impl Borrow<DiskId>) -> Result<(), Error> {
@@ -1533,7 +1617,7 @@ pub(crate) struct Instance {
     status: InstanceStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum InstanceStatus {
     #[serde(rename = "cleaning")]
     Cleaning,
@@ -1571,6 +1655,14 @@ async fn wait_resource_up(path: impl AsRef<str>, resource_name: impl AsRef<str>)
         ["down"].into_iter().collect()).await
 }
 
+async fn wait_resource_down(path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {
+    wait_resource_status(path, resource_name,
+        |res| res["Instance"]["Status"].as_str().map(|s| s.to_string()),
+        ["cleaning"].into_iter().collect(),
+        ["down"].into_iter().collect(),
+        ["up"].into_iter().collect()).await
+}
+
 async fn wait_resource_available(path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {
     wait_resource_status(path, resource_name,
         |res| res["Availability"].as_str().map(|s| s.to_string()),
@@ -1602,6 +1694,17 @@ async fn wait_resource_status(path: impl AsRef<str>, resource_name: impl AsRef<s
     Ok(())
 }
 
+async fn fetch_until_not_found(path: impl AsRef<str>) -> Result<(), Error> {
+    let path = path.as_ref();
+    loop {
+        match request_api(Method::GET, path, &None, &None).await {
+            Ok(_) => {},    
+            Err(Error::ApiNotFound(..)) => return Ok(()),
+            Err(e) => return Err(e),
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+}
 
 async fn create(path: impl AsRef<str>, body: Value, resource_name: impl AsRef<str>) -> Result<Value, Error> {
     let path = path.as_ref();
@@ -1620,12 +1723,10 @@ async fn update(path: impl AsRef<str>, body: Option<Value>) -> Result<(), Error>
     Ok(())
 }
 
-/* comment out because it's not used
-async fn delete(path: impl AsRef<str>, body: Value) -> Result<(), Error> {
-    let _ = request_api_for_resource(Method::DELETE, path, None, Some(body)).await?;
+async fn delete(path: impl AsRef<str>, body: Option<Value>) -> Result<(), Error> {
+    let _ = request_api_for_resource(Method::DELETE, path, None, body).await?;
     Ok(())
 }
-*/
 
 async fn search(path: impl AsRef<str>, resource_name: impl AsRef<str>, filter: Option<Value>, sort: Option<Value>, other: Option<Value>, page_count: u64) -> Result<Vec<Value>, Error> {
     let path = path.as_ref();

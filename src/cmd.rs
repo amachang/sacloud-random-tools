@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, io};
 use clap::{Parser, Subcommand};
 use tokio::fs;
 use serde::Serialize;
@@ -7,11 +7,12 @@ use crate::{
     api::{
         self,
         Server, ServerId,
-        SwitchId,
+        Switch, SwitchId,
         SshPublicKeyId,
         Appliance, ApplianceId,
         Archive,
         Disk,
+        InstanceStatus,
     },
     service_env::{
         PrimaryVpcRouter,
@@ -26,6 +27,8 @@ use crate::{
 pub(crate) enum Error {
     PrimaryServerNotConnectedToSwitch(ServerId, SwitchId),
     PrimaryServerNotFoundAndNeedsToBeCreatedButLoginMethodNotGiven,
+    PrimaryServerInstanceStatusIsNotClear(ServerId, InstanceStatus),
+    PrimaryVpcRouterInstanceStatusIsNotClear(ApplianceId, InstanceStatus),
     PrimarySwitchNotConnectedToVpcRouter(SwitchId, ApplianceId),
     PrimarySshPublicKeyAlreadyRegisteredButMismatch(SshPublicKeyId, String, String),
     PrimarySshPublicKeyNotGivenForNewServerDisk,
@@ -42,12 +45,14 @@ impl From<api::Error> for Error {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Cmd {
     Update(UpdateCmd),
+    Clean(CleanCmd),
 }
 
 impl Cmd {
     pub(crate) async fn run(&self) -> Result<(), Error> {
         match self {
             Cmd::Update(cmd) => cmd.run().await,
+            Cmd::Clean(cmd) => cmd.run().await,
         }
     }
 }
@@ -226,6 +231,104 @@ impl UpdateCmd {
         Ok(())
     }
 }
+
+#[derive(Debug, Parser)]
+pub(crate) struct CleanCmd {
+
+    #[arg(long)]
+    prefix: String,
+
+    #[arg(long)]
+    force: bool,
+}
+
+impl CleanCmd {
+    pub(crate) async fn run(&self) -> Result<(), Error> {
+        let prefix = self.prefix.as_str();
+
+        // confirm server down
+        if !self.force {
+            print!("Realy down? If ok, input the prefix again: ");
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            if input.trim() != prefix {
+                log::error!("prefix not matched");
+                return Ok(());
+            }
+        }
+
+        log::info!("[START] instance status check...");
+        let vpc_router = PrimaryVpcRouter::try_get(prefix).await?;
+        let switch = PrimarySwitch::try_get(prefix).await?;
+        let server = PrimaryServer::try_get(prefix).await?;
+        let disk = PrimaryServerDisk::try_get(prefix).await?;
+
+        if let Some(vpc_router) = &vpc_router {
+            match vpc_router.instance_status()? {
+                InstanceStatus::Up | InstanceStatus::Down => {},
+                _ => {
+                    return Err(Error::PrimaryVpcRouterInstanceStatusIsNotClear(vpc_router.id().clone(), vpc_router.instance_status()?));
+                },
+            }
+        }
+
+        if let Some(server) = &server {
+            match server.instance_status()? {
+                InstanceStatus::Up | InstanceStatus::Down => {},
+                _ => {
+                    return Err(Error::PrimaryServerInstanceStatusIsNotClear(server.id().clone(), server.instance_status()?));
+                },
+            }
+        }
+        log::info!("[CHECKED] instance status check: ok");
+
+        if let Some(vpc_router) = vpc_router {
+            if vpc_router.is_up()? {
+                log::info!("[START] vpc router down...");
+                Appliance::down(vpc_router.id()).await?;
+                Appliance::wait_down(vpc_router.id()).await?;
+                log::info!("[DONE] vpc router down: ok");
+            }
+            log::info!("[START] vpc router delete...");
+            Appliance::delete(vpc_router.id()).await?;
+            Appliance::wait_delete(vpc_router.id()).await?;
+            log::info!("[DONE] vpc router delete: ok");
+        }
+
+        if let Some(switch) = switch {
+            log::info!("[START] switch delete...");
+            Switch::delete(switch.id()).await?;
+            Switch::wait_delete(switch.id()).await?;
+            log::info!("[DONE] switch delete: ok");
+        }
+
+        if let Some(server) = server {
+            if server.is_up()? {
+                log::info!("[START] server down...");
+                Server::down(server.id()).await?;
+                Server::wait_down(server.id()).await?;
+                log::info!("[DONE] server down: ok");
+            }
+            log::info!("[START] server delete...");
+            Server::delete(server.id()).await?;
+            Server::wait_delete(server.id()).await?;
+            log::info!("[DONE] server delete: ok");
+        }
+
+        if let Some(disk) = disk {
+            log::info!("[START] disk delete...");
+            Disk::delete(disk.id()).await?;
+            Disk::wait_delete(disk.id()).await?;
+            log::info!("[DONE] disk delete: ok");
+        }
+
+        log::info!("[DONE] all checks passed, ok");
+        log::info!("[NOTE] ssh public key is not deleted for safety");
+
+        Ok(())
+    }
+}
+
 
 /* TODO remove old code
 pub(crate) async fn show_all_resources() -> Result<(), Error> {
