@@ -80,7 +80,7 @@ impl PrimaryServer {
         self.server.id()
     }
 
-    pub(crate) fn is_up(&self) -> bool {
+    pub(crate) fn is_up(&self) -> Result<bool, Error> {
         self.server.is_up()
     }
 }
@@ -340,7 +340,7 @@ impl PrimaryVpcRouter {
         self.appliance.id()
     }
 
-    pub(crate) fn is_up(&self) -> bool {
+    pub(crate) fn is_up(&self) -> Result<bool, Error> {
         self.appliance.is_up()
     }
 }

@@ -120,7 +120,7 @@ impl UpdateCmd {
             switch
         };
 
-        if vpc_router.is_up() {
+        if vpc_router.is_up()? {
             log::info!("[CHECKED] vpc router up check: ok");
         } else {
             log::info!("[START] vpc router booting...");
@@ -193,7 +193,7 @@ impl UpdateCmd {
         Server::wait_available(server.id()).await?;
         log::info!("[CHECKED] server availability check: ok");
 
-        if server.is_up() {
+        if server.is_up()? {
             log::info!("[CHECKED] server up check: ok");
         } else {
             log::info!("[START] server booting...");

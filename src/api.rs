@@ -14,6 +14,7 @@ static API_BASE_URL: Lazy<Url> = Lazy::new(|| { Url::parse(format!("https://secu
 pub(crate) enum Error {
     ResourceNotFound(String),
     TooManyResources(String, usize),
+    ResourceUnknownInstanceStatus,
     ResourceSerializationFailed(ResourceKind, String),
     ResourceDeserializationFailed(ResourceKind, String),
     ResourceApiInvalidResourceObject(String, Option<Value>),
@@ -263,8 +264,8 @@ pub(crate) struct Server {
     #[serde(rename = "ID")]
     id: ServerId,
 
-    #[serde(rename = "Instance")]
-    instance: Instance,
+    #[serde(rename = "Instance", skip_serializing_if = "Option::is_none")]
+    instance: Option<Instance>,
 
     #[serde(flatten)]
     info: ServerInfo,
@@ -318,8 +319,12 @@ impl Server {
         &self.id
     }
 
-    pub(crate) fn is_up(&self) -> bool {
-        self.instance.status == InstanceStatus::Up
+    pub(crate) fn is_up(&self) ->Result<bool, Error> {
+        if let Some(instance) = &self.instance {
+            Ok(instance.status == InstanceStatus::Up)
+        } else {
+            Err(Error::ResourceUnknownInstanceStatus)
+        }
     }
 }
 
@@ -676,8 +681,8 @@ pub(crate) struct Appliance {
     #[serde(rename = "ID")]
     id: ApplianceId,
 
-    #[serde(rename = "Instance")]
-    instance: Instance,
+    #[serde(rename = "Instance", skip_serializing_if = "Option::is_none")]
+    instance: Option<Instance>,
 
     #[serde(flatten)]
     info: ApplianceInfo,
@@ -748,8 +753,12 @@ impl Appliance {
         &self.id
     }
 
-    pub(crate) fn is_up(&self) -> bool {
-        self.instance.status == InstanceStatus::Up
+    pub(crate) fn is_up(&self) ->Result<bool, Error> {
+        if let Some(instance) = &self.instance {
+            Ok(instance.status == InstanceStatus::Up)
+        } else {
+            Err(Error::ResourceUnknownInstanceStatus)
+        }
     }
 }
 
