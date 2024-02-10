@@ -1658,9 +1658,9 @@ async fn wait_resource_up(path: impl AsRef<str>, resource_name: impl AsRef<str>)
 async fn wait_resource_down(path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {
     wait_resource_status(path, resource_name,
         |res| res["Instance"]["Status"].as_str().map(|s| s.to_string()),
-        ["cleaning"].into_iter().collect(),
+        ["up", "cleaning"].into_iter().collect(),
         ["down"].into_iter().collect(),
-        ["up"].into_iter().collect()).await
+        [].into_iter().collect()).await
 }
 
 async fn wait_resource_available(path: impl AsRef<str>, resource_name: impl AsRef<str>) -> Result<(), Error> {

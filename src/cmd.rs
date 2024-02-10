@@ -248,7 +248,7 @@ impl CleanCmd {
 
         // confirm server down
         if !self.force {
-            print!("Realy down? If ok, input the prefix again: ");
+            println!("Realy down? If ok, input the prefix again:");
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
             if input.trim() != prefix {
@@ -295,13 +295,6 @@ impl CleanCmd {
             log::info!("[DONE] vpc router delete: ok");
         }
 
-        if let Some(switch) = switch {
-            log::info!("[START] switch delete...");
-            Switch::delete(switch.id()).await?;
-            Switch::wait_delete(switch.id()).await?;
-            log::info!("[DONE] switch delete: ok");
-        }
-
         if let Some(server) = server {
             if server.is_up()? {
                 log::info!("[START] server down...");
@@ -322,8 +315,15 @@ impl CleanCmd {
             log::info!("[DONE] disk delete: ok");
         }
 
-        log::info!("[DONE] all checks passed, ok");
+        if let Some(switch) = switch {
+            log::info!("[START] switch delete...");
+            Switch::delete(switch.id()).await?;
+            Switch::wait_delete(switch.id()).await?;
+            log::info!("[DONE] switch delete: ok");
+        }
+
         log::info!("[NOTE] ssh public key is not deleted for safety");
+        log::info!("[DONE] all checks passed, ok");
 
         Ok(())
     }
