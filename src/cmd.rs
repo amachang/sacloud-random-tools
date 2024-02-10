@@ -468,47 +468,5 @@ pub(crate) async fn show_env(prefix: impl AsRef<str>) -> Result<(), Error> {
 
     Ok(())
 }
-
-pub(crate) async fn update_vpc_router_config(prefix: impl AsRef<str>) -> Result<(), Error> {
-    let prefix = prefix.as_ref();
-    let (vpc_router_id, _) = search_vpc_router(prefix).await?;
-    update_vpc_router_config(&vpc_router_id).await?;
-    wait_appliance_available(&vpc_router_id).await?;
-    Ok(())
-}
-
-pub(crate) async fn create_env(prefix: impl AsRef<str>, password: impl AsRef<str>, public_key_path: impl AsRef<Path>) -> Result<(), Error> {
-    let prefix = prefix.as_ref();
-    let password = password.as_ref();
-    let public_key_path = public_key_path.as_ref();
-    let public_key = match fs::read_to_string(&public_key_path).await {
-        Ok(public_key) => public_key,
-        Err(e) => return Err(Error::CouldntReadPublicKey(e, public_key_path.to_path_buf())),
-    };
-
-    let (vpc_router_id, _) = create_vpc_router(prefix).await?;
-    wait_appliance_available(&vpc_router_id).await?;
-
-    let (switch_id, _) = create_switch(prefix).await?;
-    connect_vpc_router_to_switch(&vpc_router_id, &switch_id).await?;
-    update_vpc_router_config(&vpc_router_id).await?;
-
-    up_appliance(&vpc_router_id).await?;
-    wait_appliance_up(&vpc_router_id).await?;
-    wait_appliance_available(&vpc_router_id).await?;
-
-    let key_id = register_ssh_public_key(prefix, public_key).await?;
-    let (archive_id, _) = search_latest_ubuntu_public_archive().await?;
-
-    let (server_id, _) = create_primary_server(prefix, switch_id).await?;
-    let (disk_id, _) = create_primary_server_disk(prefix, &server_id, &archive_id, password, &key_id).await?;
-    wait_disk_available(&disk_id).await?;
-    wait_server_available(&server_id).await?;
-
-    up_server(&server_id).await?;
-
-    wait_server_up(&server_id).await?;
-    wait_server_available(&server_id).await?;
-    Ok(())
-}
 */
+
