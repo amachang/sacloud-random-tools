@@ -13,7 +13,6 @@ use crate::api::{
     Note,
     InterfaceDriver,
     Ipv4Net, // SingleLineIpv4Net,
-    InstanceStatus,
 };
 
 static SERVER_PLAN_ID: Lazy<ServerPlanId> = Lazy::new(|| ServerPlanId("100001001".into()));
@@ -79,14 +78,6 @@ impl PrimaryServer {
 
     pub(crate) fn id(&self) -> &ServerId {
         self.server.id()
-    }
-
-    pub(crate) fn instance_status(&self) -> Result<InstanceStatus, Error> {
-        self.server.instance_status()
-    }
-
-    pub(crate) fn is_up(&self) -> Result<bool, Error> {
-        self.instance_status().map(|status| status == InstanceStatus::Up)
     }
 }
 
@@ -343,14 +334,6 @@ impl PrimaryVpcRouter {
 
     pub(crate) fn id(&self) -> &ApplianceId {
         self.appliance.id()
-    }
-
-    pub(crate) fn instance_status(&self) -> Result<InstanceStatus, Error> {
-        self.appliance.instance_status()
-    }
-
-    pub(crate) fn is_up(&self) -> Result<bool, Error> {
-        self.instance_status().map(|status| status == InstanceStatus::Up)
     }
 }
 

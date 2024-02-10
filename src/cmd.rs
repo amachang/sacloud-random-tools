@@ -1,6 +1,6 @@
-use std::{path::PathBuf, io};
+use std::{path::PathBuf, io, time::Duration};
 use clap::{Parser, Subcommand};
-use tokio::fs;
+use tokio::{fs, time::sleep};
 use serde::Serialize;
 
 use crate::{
@@ -27,8 +27,6 @@ use crate::{
 pub(crate) enum Error {
     PrimaryServerNotConnectedToSwitch(ServerId, SwitchId),
     PrimaryServerNotFoundAndNeedsToBeCreatedButLoginMethodNotGiven,
-    PrimaryServerInstanceStatusIsNotClear(ServerId, InstanceStatus),
-    PrimaryVpcRouterInstanceStatusIsNotClear(ApplianceId, InstanceStatus),
     PrimarySwitchNotConnectedToVpcRouter(SwitchId, ApplianceId),
     PrimarySshPublicKeyAlreadyRegisteredButMismatch(SshPublicKeyId, String, String),
     PrimarySshPublicKeyNotGivenForNewServerDisk,
@@ -129,7 +127,7 @@ impl UpdateCmd {
             switch
         };
 
-        if vpc_router.is_up()? {
+        if Appliance::is_up(vpc_router.id()).await? {
             log::info!("[CHECKED] vpc router up check: ok");
             Appliance::wait_available(vpc_router.id()).await?;
             log::info!("[CHECKED] vpc router availability check: ok");
@@ -208,7 +206,7 @@ impl UpdateCmd {
         Server::wait_available(server.id()).await?;
         log::info!("[CHECKED] server availability check: ok");
 
-        if server.is_up()? {
+        if Server::is_up(server.id()).await? {
             log::info!("[CHECKED] server up check: ok");
         } else {
             log::info!("[START] server booting...");
@@ -264,26 +262,46 @@ impl CleanCmd {
         let disk = PrimaryServerDisk::try_get(prefix).await?;
 
         if let Some(vpc_router) = &vpc_router {
-            match vpc_router.instance_status()? {
-                InstanceStatus::Up | InstanceStatus::Down => {},
-                _ => {
-                    return Err(Error::PrimaryVpcRouterInstanceStatusIsNotClear(vpc_router.id().clone(), vpc_router.instance_status()?));
-                },
+            loop {
+                match Appliance::instance_status(vpc_router.id()).await {
+                    Err(api::Error::ResourceUnknownInstanceStatus) => {
+                        log::info!("[WAIT] vpc router instance status check: unknown, retrying...");
+                        sleep(Duration::from_secs(5)).await;
+                    },
+                    Err(e) => return Err(e.into()),
+                    Ok(InstanceStatus::Up | InstanceStatus::Down) => {
+                        break;
+                    },
+                    Ok(status) => {
+                        log::info!("[WAIT] vpc router instance status check: {}, retrying...", status);
+                        sleep(Duration::from_secs(5)).await;
+                    },
+                }
             }
         }
 
         if let Some(server) = &server {
-            match server.instance_status()? {
-                InstanceStatus::Up | InstanceStatus::Down => {},
-                _ => {
-                    return Err(Error::PrimaryServerInstanceStatusIsNotClear(server.id().clone(), server.instance_status()?));
-                },
+            loop {
+                match Server::instance_status(server.id()).await {
+                    Err(api::Error::ResourceUnknownInstanceStatus) => {
+                        log::info!("[WAIT] server instance status check: unknown, retrying...");
+                        sleep(Duration::from_secs(5)).await;
+                    },
+                    Err(e) => return Err(e.into()),
+                    Ok(InstanceStatus::Up | InstanceStatus::Down) => {
+                        break;
+                    },
+                    Ok(status) => {
+                        log::info!("[WAIT] server instance status check: {}, retrying...", status);
+                        sleep(Duration::from_secs(5)).await;
+                    },
+                }
             }
         }
         log::info!("[CHECKED] instance status check: ok");
 
         if let Some(vpc_router) = vpc_router {
-            if vpc_router.is_up()? {
+            if Appliance::is_up(vpc_router.id()).await? {
                 log::info!("[START] vpc router down...");
                 Appliance::down(vpc_router.id()).await?;
                 Appliance::wait_down(vpc_router.id()).await?;
@@ -296,7 +314,7 @@ impl CleanCmd {
         }
 
         if let Some(server) = server {
-            if server.is_up()? {
+            if Server::is_up(server.id()).await? {
                 log::info!("[START] server down...");
                 Server::down(server.id()).await?;
                 Server::wait_down(server.id()).await?;

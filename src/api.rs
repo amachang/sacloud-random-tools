@@ -56,6 +56,7 @@ pub(crate) enum ResourceKind {
     ServerPlan,
     // DiskPlan, commented out because it's not used
     Note,
+    Instance,
 }
 
 impl ResourceKind {
@@ -70,6 +71,7 @@ impl ResourceKind {
             Self::ServerPlan => "ServerPlan",
             // Self::DiskPlan => "DiskPlan",
             Self::Note => "Note",
+            Self::Instance => "Instance",
         }
     }
 
@@ -84,6 +86,7 @@ impl ResourceKind {
             Self::ServerPlan => "ServerPlans",
             // Self::DiskPlan => "DiskPlans",
             Self::Note => "Notes",
+            Self::Instance => "Instances",
         }
     }
 
@@ -98,6 +101,7 @@ impl ResourceKind {
             Self::ServerPlan => "product/server",
             // Self::DiskPlan => "product/disk",
             Self::Note => "note",
+            Self::Instance => panic!("ResourceKind::Instance has no root path"),
         }
     }
 
@@ -134,6 +138,19 @@ impl ResourceKind {
         let resource_id = resource_id.as_ref();
         let path = format!("{}/{}", self.path(), resource_id);
         delete(path, None).await
+    }
+
+    pub(crate) async fn instance_status(&self, resource_id: impl AsRef<str>) -> Result<InstanceStatus, Error> {
+        let resource_id = resource_id.as_ref();
+        let path = format!("{}/{}/power", self.path(), resource_id);
+        let resource_name = ResourceKind::Instance.single_name();
+
+        let resource_value = fetch(path, resource_name).await?;
+        let instance = Instance::from_value(resource_value)?;
+        match instance.status {
+            Some(status) => Ok(status),
+            None => Err(Error::ResourceUnknownInstanceStatus),
+        }
     }
 
     pub(crate) async fn up_resource(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
@@ -329,6 +346,19 @@ impl Server {
         ResourceKind::Server.wait_available(server_id.to_string()).await
     }
 
+    pub(crate) async fn instance_status(server_id: impl Borrow<ServerId>) -> Result<InstanceStatus, Error> {
+        let server_id = server_id.borrow();
+        ResourceKind::Server.instance_status(server_id.to_string()).await
+    }
+
+    pub(crate) async fn is_up(server_id: impl Borrow<ServerId>) -> Result<bool, Error> {
+        let server_id = server_id.borrow();
+        match ResourceKind::Server.instance_status(server_id.to_string()).await? {
+            InstanceStatus::Up => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
     pub(crate) async fn up(server_id: impl Borrow<ServerId>) -> Result<(), Error> {
         let server_id = server_id.borrow();
         ResourceKind::Server.up_resource(server_id.to_string()).await
@@ -361,14 +391,6 @@ impl Server {
 
     pub(crate) fn id(&self) -> &ServerId {
         &self.id
-    }
-
-    pub(crate) fn instance_status(&self) ->Result<InstanceStatus, Error> {
-        if let Some(instance) = &self.instance {
-            Ok(instance.status)
-        } else {
-            Err(Error::ResourceUnknownInstanceStatus)
-        }
     }
 
 }
@@ -794,6 +816,19 @@ impl Appliance {
         ResourceKind::Appliance.wait_available(appliance_id.to_string()).await
     }
 
+    pub(crate) async fn instance_status(appliance_id: impl Borrow<ApplianceId>) ->Result<InstanceStatus, Error> {
+        let appliance_id = appliance_id.borrow();
+        ResourceKind::Appliance.instance_status(appliance_id.to_string()).await
+    }
+
+    pub(crate) async fn is_up(appliance_id: impl Borrow<ApplianceId>) -> Result<bool, Error> {
+        let appliance_id = appliance_id.borrow();
+        match ResourceKind::Appliance.instance_status(appliance_id.to_string()).await? {
+            InstanceStatus::Up => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
     pub(crate) async fn up(appliance_id: impl Borrow<ApplianceId>) -> Result<(), Error> {
         let appliance_id = appliance_id.borrow();
         ResourceKind::Appliance.up_resource(appliance_id.to_string()).await
@@ -826,14 +861,6 @@ impl Appliance {
 
     pub(crate) fn id(&self) -> &ApplianceId {
         &self.id
-    }
-
-    pub(crate) fn instance_status(&self) ->Result<InstanceStatus, Error> {
-        if let Some(instance) = &self.instance {
-            Ok(instance.status)
-        } else {
-            Err(Error::ResourceUnknownInstanceStatus)
-        }
     }
 }
 
@@ -1613,8 +1640,14 @@ impl Default for InterfaceDriver {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Instance {
-    #[serde(rename = "Status")]
-    status: InstanceStatus,
+    #[serde(rename = "Status", skip_serializing_if = "Option::is_none")]
+    status: Option<InstanceStatus>,
+}
+
+impl Instance {
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Instance, e.to_string()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1627,6 +1660,16 @@ pub(crate) enum InstanceStatus {
 
     #[serde(rename = "down")]
     Down,
+}
+
+impl fmt::Display for InstanceStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cleaning => write!(f, "cleaning"),
+            Self::Up => write!(f, "up"),
+            Self::Down => write!(f, "down"),
+        }
+    }
 }
 
 // Utils
