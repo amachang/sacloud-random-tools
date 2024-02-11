@@ -30,8 +30,16 @@ trap '_motd fail' ERR
 function ensure_packages() {
     echo "Ensure packages..."
 
+    # needrestart の interactive モードを無効化
+    if ! [ -f /etc/needrestart/conf.d/50-autorestart.conf ]; then
+        echo "\$nrconf{restart} = 'a';" >> /etc/needrestart/conf.d/50-autorestart.conf
+    fi
+
+    apt-get install -y software-properties-common
+    add-apt-repository -y ppa:neovim-ppa/stable
+
     apt-get update
-    apt-get install -y jq coreutils
+    apt-get install -y jq coreutils openresolv lua5.4 neovim wireguard build-essential
 
     package_len=$(echo @@@package_list_json@@@ | jq -r 'length')
     if [ "$package_len" -gt 0 ]; then
@@ -46,22 +54,27 @@ function ensure_packages() {
 function setup_rust() {
     echo "Setup rust..."
 
-    sudo -i -u ubuntu sh -c '
+    tmp_script=$(mktemp)
+    cat <<EOF >"$tmp_script"
         set -eux
 
-        if ! [ -d "$HOME/.cargo" ]; then
+        if ! [ -d "\$HOME/.cargo" ]; then
             curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         fi
 
-        if ! grep -q ".cargo/env" "$HOME/.bashrc"; then
-            echo "source $HOME/.cargo/env" >> "$HOME/.bashrc"
+        if ! grep -q ".cargo/env" "\$HOME/.bashrc"; then
+            echo "source \$HOME/.cargo/env" >> "\$HOME/.bashrc"
         fi
 
-        source "$HOME/.cargo/env"
+        source "\$HOME/.cargo/env"
 
         rustup update
         rustup default stable
-    '
+EOF
+    chmod +x "$tmp_script"
+    sudo chown ubuntu:ubuntu "$tmp_script"
+    sudo -i -u ubuntu sh -c "bash $tmp_script"
+    rm -f "$tmp_script"
 
     echo "Setup rust...done"
 }
@@ -70,9 +83,6 @@ function setup_rust() {
 
 function setup_development_environment() {
     echo "Setup development environment..."
-
-    # NeoVim
-    apt-get install -y neovim
 
     tmp_init_vim=$(mktemp)
 
@@ -106,23 +116,13 @@ Plug 'rust-lang/rust.vim'
 Plug 'vim-scripts/indentpython.vim'
 Plug 'nvie/vim-flake8'
 
-" nu
-Plug 'nvim-lua/plenary.nvim'
-Plug 'jose-elias-alvarez/null-ls.nvim'
-Plug 'LhKipp/nvim-nu', {'do': ':TSInstall nu'}
-
-"copilot
-Plug 'github/copilot.vim'
-
 call plug#end()
 
-
-"" plugin settings
-
-lua require'nvim-treesitter.configs'.setup{highlight={enable=true}}
 EOF
+    sudo chown ubuntu:ubuntu "$tmp_init_vim"
 
-    sudo -i -u ubuntu sh -c <<EOF
+    tmp_script=$(mktemp)
+    cat <<EOF >"$tmp_script"
         set -eux
 
         curl -fLo "\$HOME/.local/share/nvim/site/autoload/plug.vim" --create-dirs \
@@ -140,6 +140,10 @@ EOF
             echo "alias vim=nvim" >> "\$HOME/.bashrc"
         fi
 EOF
+    chmod +x "$tmp_script"
+    sudo chown ubuntu:ubuntu "$tmp_script"
+    sudo -i -u ubuntu sh -c "bash $tmp_script"
+    rm -f "$tmp_script"
 
     rm -f "$tmp_init_vim"
 
@@ -150,8 +154,6 @@ EOF
 
 function setup_wireguard() {
     echo "Setup WireGuard..."
-
-    apt-get install -y wireguard
 
     # デフォルトゲートウェイとインターフェースを取得
     route_info=$(ip route show table main | grep default)
@@ -165,6 +167,11 @@ function setup_wireguard() {
     wireguard_peer_public_key=@@@wireguard_peer_public_key@@@
     wireguard_peer_endpoint=@@@wireguard_peer_endpoint@@@
 
+    # ssh 用のルーティングテーブルを作成
+    if ! grep -q "2 ssh" /etc/iproute2/rt_tables; then
+        echo "2 ssh" >> /etc/iproute2/rt_tables
+    fi
+
     # WireGuard の設定ファイルを作成
     cat <<EOF >/etc/wireguard/wg0.conf 
 [Interface]
@@ -173,19 +180,13 @@ Address = $wireguard_interface_address_list
 DNS = $wireguard_interface_dns_list
 MTU = 1280
 
-PostUp = ip route add 10.0.0.0/8 via $default_gateway dev $interface
-PostUp = ip route add 172.16.0.0/12 via $default_gateway dev $interface
-PostUp = ip route add 192.168.0.0/16 via $default_gateway dev $interface
 PostUp = ip route add default via $default_gateway dev $interface table ssh
 PostUp = ip rule add fwmark 0x2 table ssh
 PostUp = /sbin/iptables -A OUTPUT -t mangle -o wg0 -p tcp --sport 22 -j MARK --set-mark 2
 
-PreDown = /sbin/iptables -D OUTPUT -t mangle -o wg0 -p tcp --sport 22 -j MARK --set-mark 2
-PreDown = ip rule del fwmark 0x2 table ssh
-PreDown = ip route del default via $default_gateway dev $interface table ssh
-PreDown = ip route del 10.0.0.0/8 via $default_gateway dev $interface
-PreDown = ip route del 172.16.0.0/12 via $default_gateway dev $interface
-PreDown = ip route del 192.168.0.0/16 via $default_gateway dev $interface
+PreDown = /sbin/iptables -D OUTPUT -t mangle -o wg0 -p tcp --sport 22 -j MARK --set-mark 2 || true
+PreDown = ip rule del fwmark 0x2 table ssh || true
+PreDown = ip route del default via $default_gateway dev $interface table ssh || true
 
 [Peer]
 PublicKey = $wireguard_peer_public_key
@@ -215,15 +216,20 @@ function disable_auto_start_and_stop_wireguard_for_update() {
             systemctl stop wg-quick@wg0.service
         fi
 
-        # 念の為確認
-        if systemctl is-active --quiet wg-quick@wg0.service; then
-            echo "WireGuard interface wg0 is still up. Please check the status."
-            exit 1
-        fi
-        if ip link show wg0 > /dev/null 2>&1; then
-            echo "WireGuard interface wg0 is still up. Please check the status."
-            exit 1
-        fi
+        wait_loop_count=0
+        while true; do
+            if ! systemctl is-active --quiet wg-quick@wg0.service; then
+                break
+            fi
+            echo "Waiting for WireGuard interface wg0 to be down..."
+            sleep 1
+
+            wait_loop_count=$((wait_loop_count + 1))
+            if [ "$wait_loop_count" -gt 30 ]; then
+                echo "Timeout: Failed to stop WireGuard service"
+                exit 1
+            fi
+        done
     fi
 
     echo "Disable auto start and stop WireGuard for update...done"
@@ -234,13 +240,28 @@ function disable_auto_start_and_stop_wireguard_for_update() {
 function enable_auto_start_wireguard() {
     echo "Enable auto start WireGuard..."
 
-    if ! systemctl is-active --quiet wg-quick@wg0.service; then
+    if ! systemctl is-enabled --quiet wg-quick@wg0.service; then
         systemctl enable wg-quick@wg0.service
     fi
 
     if ! systemctl is-active --quiet wg-quick@wg0.service; then
         systemctl start wg-quick@wg0.service
     fi
+
+    wait_loop_count=0
+    while true; do
+        if systemctl is-active --quiet wg-quick@wg0.service; then
+            break
+        fi
+        echo "Waiting for WireGuard interface wg0 to be up..."
+        sleep 1
+
+        wait_loop_count=$((wait_loop_count + 1))
+        if [ "$wait_loop_count" -gt 30 ]; then
+            echo "Timeout: Failed to start WireGuard service"
+            exit 1
+        fi
+    done
 
     echo "Enable auto start WireGuard...done"
 }
