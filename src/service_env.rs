@@ -1,10 +1,12 @@
-use std::{borrow::Borrow, net::{IpAddr, Ipv4Addr}};
+use std::{borrow::Borrow, net::{IpAddr, Ipv4Addr}, time::Duration};
 use once_cell::sync::Lazy;
 use serde_json::json;
 use serde::{Serialize, Deserialize};
+use tokio::time::sleep;
 
 use crate::api::{
-    Error,
+    self,
+    ZONE,
     Server, ServerId, ServerInfo, ServerPlanId,
     Disk, DiskId, DiskInfo, DiskPlanId, DiskConnection, DiskConfig,
     Appliance, ApplianceId, ApplianceInfo, VpcRouterInfo, VpcRouterPlanId,
@@ -13,6 +15,7 @@ use crate::api::{
     SshPublicKey, SshPublicKeyId, SshPublicKeyInfo,
     Note, NoteInfo, NoteId, NoteClass,
     InterfaceDriver,
+    ApiKeyId,
     Ipv4Net, // SingleLineIpv4Net,
 };
 
@@ -23,6 +26,20 @@ const CONFIG_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/con
 const SETUP_SHELL_NOTE_CONTENT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/note/setup.sh"));
 
 static CONFIG: Lazy<Config> = Lazy::new(|| { Config::default() });
+
+#[derive(Debug, Serialize)]
+pub(crate) enum Error {
+    ApiError(api::Error),
+    PrimaryServerSetupShellNoteHasMultipleTags(Vec<String>),
+    PrimaryServerSetupShellNoteFailed,
+    PrimaryServerSetupShellNoteUnknownTag(String),
+}
+
+impl From<api::Error> for Error {
+    fn from(e: api::Error) -> Self {
+        Self::ApiError(e)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EquipmentKind {
@@ -50,6 +67,15 @@ impl EquipmentKind {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Config {
     #[serde()]
+    api_key_id: ApiKeyId,
+
+    #[serde()]
+    server: ServerConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ServerConfig {
+    #[serde()]
     package: Vec<String>,
 
     #[serde()]
@@ -76,8 +102,9 @@ pub(crate) struct WireGuardInterfaceConfig {
     #[serde()]
     private_key: String,
 
+    // 雑
     #[serde()]
-    address: Vec<IpAddr>,
+    address: Vec<String>,
 
     #[serde()]
     dns: Vec<IpAddr>,
@@ -131,6 +158,34 @@ impl PrimaryServer {
     pub(crate) fn id(&self) -> &ServerId {
         self.server.id()
     }
+
+    pub(crate) async fn wait_for_setup_shell_note_done(id: impl Borrow<ServerId>) -> Result<(), Error> {
+        let id = id.borrow();
+        loop {
+            let server = Server::get(id).await?;
+            let tags_for_setup = server.tags().into_iter()
+                .filter(|tag| tag.starts_with("setup-"))
+                .map(|tag| tag.to_string()).collect::<Vec<_>>();
+            if tags_for_setup.len() == 0 {
+                log::debug!("[WAIT_STARTUP] script not started yet");
+            } else if tags_for_setup.len() > 1 {
+                return Err(Error::PrimaryServerSetupShellNoteHasMultipleTags(tags_for_setup));
+            } else {
+                let tag = tags_for_setup.first().expect("checked");
+                if tag == "setup-done" {
+                    log::debug!("[WAIT_STARTUP] script done");
+                    return Ok(());
+                } else if tag == "setup-failed" {
+                    return Err(Error::PrimaryServerSetupShellNoteFailed);
+                } else if tag == "setup-running" {
+                    log::debug!("[WAIT_STARTUP] script running");
+                } else {
+                    return Err(Error::PrimaryServerSetupShellNoteUnknownTag(tag.to_string()));
+                }
+            }
+            sleep(Duration::from_secs(5)).await;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -181,16 +236,16 @@ impl PrimaryServerDisk {
             .user_subnet(Ipv4Net::new(Ipv4Addr::new(192, 168, 2, 1), 24))
             .change_partition_uuid(false)
             .enable_dhcp(false)
-            .note_id_and_variables_pairs(vec![
-                (startup_shell_note_id.clone(), json!({
-                    "package_list_json": serde_json::to_string(&CONFIG.package).expect("no reason to fail"),
-                    "wireguard_interface_private_key": CONFIG.wireguard.interface.private_key,
-                    "wireguard_interface_address_list_json": serde_json::to_string(&CONFIG.wireguard.interface.address).expect("no reason to fail"),
-                    "wireguard_interface_dns_list_json": serde_json::to_string(&CONFIG.wireguard.interface.dns).expect("no reason to fail"),
-                    "wireguard_peer_public_key": CONFIG.wireguard.peer.public_key,
-                    "wireguard_peer_endpoint": CONFIG.wireguard.peer.endpoint,
-                }))
-            ]);
+            .setup_shell_note(startup_shell_note_id.clone(), CONFIG.api_key_id.clone(), json!({
+                "server_id": server_id,
+                "zone": ZONE.clone(),
+                "package_list_json": serde_json::to_string(&CONFIG.server.package).expect("no reason to fail"),
+                "wireguard_interface_private_key": CONFIG.server.wireguard.interface.private_key,
+                "wireguard_interface_address_list_json": serde_json::to_string(&CONFIG.server.wireguard.interface.address).expect("no reason to fail"),
+                "wireguard_interface_dns_list_json": serde_json::to_string(&CONFIG.server.wireguard.interface.dns).expect("no reason to fail"),
+                "wireguard_peer_public_key": CONFIG.server.wireguard.peer.public_key,
+                "wireguard_peer_endpoint": CONFIG.server.wireguard.peer.endpoint,
+            }));
 
         if let Some(password) = password {
             config_builder = config_builder
@@ -345,7 +400,7 @@ impl PrimaryVpcRouter {
             firewall_send_config.push(json!({ "Protocol": "ip", "DestinationNetwork": format!("{}/32", local_ip), "Action": "allow", "Description": "local" }));
         }
 
-        let wireguard_peer_endpoint_ip = CONFIG.wireguard.peer.endpoint;
+        let wireguard_peer_endpoint_ip = CONFIG.server.wireguard.peer.endpoint;
         firewall_send_config.push(json!({ "Protocol": "udp", "DestinationNetwork": format!("{}/32", wireguard_peer_endpoint_ip), "DestinationPort": "51820", "Action": "allow", "Description": "wireguard" }));
 
         firewall_receive_config.push(json!({ "Protocol": "ip", "Action": "deny", "Description": "otherwise" }));

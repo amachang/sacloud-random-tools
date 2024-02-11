@@ -1,4 +1,8 @@
 #! /bin/bash
+#@sacloud-once
+#@sacloud-apikey required permission=create AK "API Key"
+#@sacloud-text required shellarg server_id "Server ID"
+#@sacloud-text required shellarg zone "Zone"
 #@sacloud-text required shellarg package_list_json "Package list (json)"
 #@sacloud-text required shellarg wireguard_interface_private_key "WireGuard Interface Private Key"
 #@sacloud-text required shellarg wireguard_interface_address_list_json "WireGuard Interface Address List (json)"
@@ -6,17 +10,29 @@
 #@sacloud-text required shellarg wireguard_peer_public_key "WireGuard Peer Public Key"
 #@sacloud-text required shellarg wireguard_peer_endpoint "WireGuard Peer Endpoint"
 
+# 元々はスクリプトをアップデートして、再起動することで実行することを想定していたが、
+# スクリプトをアップデートしても、再起動時に更新されるわけではないようなので毎回やる意味もなさそう
+# そのため @sacloud-once で実行するインストールスクリプトとして扱うことにする
+
 _motd() {
     LOG=$(ls /root/.sacloud-api/notes/*log)
+    server_id=@@@server_id@@@
+    zone=@@@zone@@@
     case $1 in
         start)
             echo -e "\n#-- Startup-script is \\033[0;32mrunning\\033[0;39m. --#\n\nPlease check the log file: ${LOG}\n" > /etc/motd
+            curl --user "$SACLOUD_APIKEY_ACCESS_TOKEN:$SACLOUD_APIKEY_ACCESS_TOKEN_SECRET" \
+                -X 'PUT' -d '{"Server": {"Tags": ["setup-running"]}}' "https://secure.sakura.ad.jp/cloud/zone/$zone/api/cloud/1.1/server/$server_id"
             ;;
         fail)
             echo -e "\n#-- Startup-script \\033[0;31mfailed\\033[0;39m. --#\n\nPlease check the log file: ${LOG}\n" > /etc/motd
+            curl --user "$SACLOUD_APIKEY_ACCESS_TOKEN:$SACLOUD_APIKEY_ACCESS_TOKEN_SECRET" \
+                -X 'PUT' -d '{"Server": {"Tags": ["setup-failed"]}}' "https://secure.sakura.ad.jp/cloud/zone/$zone/api/cloud/1.1/server/$server_id"
             exit 1
             ;;
         end)
+            curl --user "$SACLOUD_APIKEY_ACCESS_TOKEN:$SACLOUD_APIKEY_ACCESS_TOKEN_SECRET" \
+                -X 'PUT' -d '{"Server": {"Tags": ["setup-done"]}}' "https://secure.sakura.ad.jp/cloud/zone/$zone/api/cloud/1.1/server/$server_id"
             cp -f /dev/null /etc/motd
             ;;
     esac
@@ -35,6 +51,7 @@ function ensure_packages() {
         echo "\$nrconf{restart} = 'a';" >> /etc/needrestart/conf.d/50-autorestart.conf
     fi
 
+    apt-get update
     apt-get install -y software-properties-common
     add-apt-repository -y ppa:neovim-ppa/stable
 
@@ -190,7 +207,7 @@ PreDown = ip route del default via $default_gateway dev $interface table ssh || 
 
 [Peer]
 PublicKey = $wireguard_peer_public_key
-Endpoint = $wireguard_peer_endpoint
+Endpoint = $wireguard_peer_endpoint:51820
 PersistentKeepalive = 25
 AllowedIPs = 0.0.0.0/0, ::/0
 EOF
@@ -227,7 +244,7 @@ function disable_auto_start_and_stop_wireguard_for_update() {
             wait_loop_count=$((wait_loop_count + 1))
             if [ "$wait_loop_count" -gt 30 ]; then
                 echo "Timeout: Failed to stop WireGuard service"
-                exit 1
+                false
             fi
         done
     fi
@@ -259,7 +276,7 @@ function enable_auto_start_wireguard() {
         wait_loop_count=$((wait_loop_count + 1))
         if [ "$wait_loop_count" -gt 30 ]; then
             echo "Timeout: Failed to start WireGuard service"
-            exit 1
+            false
         fi
     done
 

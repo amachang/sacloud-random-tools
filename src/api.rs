@@ -6,9 +6,11 @@ use serde_json::{self, Value, json};
 use reqwest::{Method, StatusCode};
 use tokio::time::sleep;
 
+pub(crate) static ZONE: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_ZONE").unwrap() });
+
 static ACCESS_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_ACCESS_TOKEN").unwrap() });
 static SECRET_TOKEN: Lazy<String> = Lazy::new(|| { env::var("SACLOUD_SECRET_TOKEN").unwrap() });
-static API_BASE_URL: Lazy<Url> = Lazy::new(|| { Url::parse(format!("https://secure.sakura.ad.jp/cloud/zone/{}/api/cloud/1.1/", env::var("SACLOUD_ZONE").unwrap()).as_str()).unwrap() });
+static API_BASE_URL: Lazy<Url> = Lazy::new(|| { Url::parse(format!("https://secure.sakura.ad.jp/cloud/zone/{}/api/cloud/1.1/", &*ZONE).as_str()).unwrap() });
 
 #[derive(Debug, Serialize)]
 pub(crate) enum Error {
@@ -334,6 +336,12 @@ impl Server {
         resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
     }
 
+    pub(crate) async fn get(server_id: impl Borrow<ServerId>) -> Result<Server, Error> {
+        let server_id = server_id.borrow();
+        let resource_value = ResourceKind::Server.get(server_id.to_string()).await?;
+        Server::from_value(resource_value)
+    }
+
     pub(crate) async fn create(info: ServerInfo) -> Result<Server, Error> {
         let req_value = info.to_value()?;
         let res_value = ResourceKind::Server.create(req_value).await?;
@@ -409,6 +417,12 @@ impl Server {
         &self.id
     }
 
+    pub(crate) fn tags(&self) -> Vec<&str> {
+        let Some(tags) = self.info.tags.as_ref() else {
+            panic!("ensure tags is Some before calling this method");
+        };
+        tags.iter().map(|s| s.as_str()).collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -424,6 +438,9 @@ pub(crate) struct ServerInfo {
 
     #[serde(rename = "HostName", skip_serializing_if = "Option::is_none")]
     host_name: Option<String>,
+
+    #[serde(rename = "Tags", skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<String>>,
 
     #[serde(rename = "InterfaceDriver", skip_serializing_if = "Option::is_none")]
     interface_driver: Option<InterfaceDriver>,
@@ -489,6 +506,7 @@ pub(crate) struct ServerInfoBuilder {
     server_plan: Option<ServerPlanRef>,
     description: Option<String>,
     host_name: Option<String>,
+    tags: Option<Vec<String>>,
     interface_driver: Option<InterfaceDriver>,
     connected_switches: Option<Vec<ConnectedSwitch>>,
     wait_disk_migration: Option<bool>,
@@ -501,6 +519,7 @@ impl ServerInfoBuilder {
             server_plan: None,
             description: None,
             host_name: None,
+            tags: None,
             interface_driver: None,
             connected_switches: None,
             wait_disk_migration: None,
@@ -555,6 +574,7 @@ impl ServerInfoBuilder {
             server_plan: self.server_plan,
             description: self.description,
             host_name: self.host_name,
+            tags: self.tags,
             interface_driver: self.interface_driver,
             connected_switches: self.connected_switches,
             wait_disk_migration: self.wait_disk_migration,
@@ -1354,9 +1374,12 @@ impl DiskConfigBuilder {
         self.enable_dhcp = Some(enable_dhcp);
         self
     }
-    
-    pub(crate) fn note_id_and_variables_pairs(mut self, note_ids: Vec<(NoteId, Value)>) -> Self {
-        self.notes = Some(note_ids.into_iter().map(|(id, variables)| NoteRef::new(id, variables)).collect());
+
+    pub(crate) fn setup_shell_note(mut self, id: NoteId, api_key_id: ApiKeyId, variables: Value) -> Self {
+        if self.notes.is_none() {
+            self.notes = Some(Vec::new());
+        }
+        self.notes.as_mut().unwrap().push(NoteRef { id, api_key: ApiKeyRef { id: api_key_id }, variables });
         self
     }
 
@@ -1579,17 +1602,11 @@ pub(crate) struct NoteRef {
     #[serde(rename = "ID")]
     id: NoteId,
 
+    #[serde(rename = "APIKey")]
+    api_key: ApiKeyRef,
+
     #[serde(rename = "Variables")]
     variables: Value,
-}
-
-impl NoteRef {
-    pub(crate) fn new(id: NoteId, variables: Value) -> Self {
-        Self {
-            id: id,
-            variables: variables,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1627,6 +1644,11 @@ impl Note {
         let note_id = note_id.borrow();
         let info_value = info.to_value()?;
         ResourceKind::Note.update(note_id.to_string(), info_value).await
+    }
+
+    pub(crate) async fn wait_available(note_id: impl Borrow<NoteId>) -> Result<(), Error> {
+        let note_id = note_id.borrow();
+        ResourceKind::Note.wait_available(note_id.to_string()).await
     }
 
     /* commented out because it's not used
@@ -1800,6 +1822,17 @@ impl fmt::Display for InstanceStatus {
         }
     }
 }
+
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ApiKeyId(pub ResourceId);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ApiKeyRef {
+    #[serde(rename = "ID")]
+    id: ApiKeyId,
+}
+
 
 // Utils
 

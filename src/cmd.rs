@@ -12,9 +12,11 @@ use crate::{
         Appliance, ApplianceId,
         Archive,
         Disk,
+        Note,
         InstanceStatus,
     },
     service_env::{
+        self,
         PrimaryVpcRouter,
         PrimarySwitch,
         PrimaryServer,
@@ -33,11 +35,18 @@ pub(crate) enum Error {
     PrimarySshPublicKeyNotGivenForNewServerDisk,
     PrimarySshPublicKeyGivenButCouldntRead(PathBuf, String),
     ApiError(api::Error),
+    ServiceEnvError(service_env::Error),
 }
 
 impl From<api::Error> for Error {
     fn from(e: api::Error) -> Self {
         Error::ApiError(e)
+    }
+}
+
+impl From<service_env::Error> for Error {
+    fn from(e: service_env::Error) -> Self {
+        Error::ServiceEnvError(e)
     }
 }
 
@@ -157,11 +166,13 @@ impl UpdateCmd {
             log::info!("[CHECKED] note existence check: already exists, id: {}, ok", note.id());
             log::info!("[START] note content updating if needed...");
             PrimaryServerSetupShellNote::update_content_if_needed(note.id()).await?;
+            Note::wait_available(note.id()).await?;
             log::info!("[DONE] note content updated, ok");
             note
         } else {
             log::info!("[START] note existence check: not exists, creating...");
             let note = PrimaryServerSetupShellNote::create(prefix).await?;
+            Note::wait_available(note.id()).await?;
             log::info!("[DONE] note created, id: {}, ok", note.id());
             note
         };
@@ -230,7 +241,12 @@ impl UpdateCmd {
         log::info!("[CHECKED] server availability check: ok");
 
         if Server::is_up(server.id()).await? {
-            log::info!("[CHECKED] server up check: ok");
+            log::info!("[START] restart server...");
+            Server::down(server.id()).await?;
+            Server::wait_down(server.id()).await?;
+            Server::up(server.id()).await?;
+            Server::wait_up(server.id()).await?;
+            log::info!("[DONE] server restarted, ok");
         } else {
             log::info!("[START] server booting...");
             Server::up(server.id()).await?;
@@ -240,8 +256,12 @@ impl UpdateCmd {
         Server::wait_available(server.id()).await?;
         log::info!("[CHECKED] server availability check: ok");
 
+        log::info!("[START] wait for server setup script...");
+        PrimaryServer::wait_for_setup_shell_note_done(server.id()).await?;
+        log::info!("[DONE] server setup script done, ok");
+
         log::info!("[START] vpc router config updating...");
-        PrimaryVpcRouter::update_config(vpc_router.id(), false).await?;
+        PrimaryVpcRouter::update_config(vpc_router.id(), true).await?;
         Appliance::apply_config(vpc_router.id()).await?;
         log::info!("[DONE] vpc router config updated, ok");
 
