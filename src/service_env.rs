@@ -1,6 +1,7 @@
-use std::{borrow::Borrow, net::Ipv4Addr};
+use std::{borrow::Borrow, net::{IpAddr, Ipv4Addr}};
 use once_cell::sync::Lazy;
 use serde_json::json;
+use serde::{Serialize, Deserialize};
 
 use crate::api::{
     Error,
@@ -18,8 +19,10 @@ use crate::api::{
 static SERVER_PLAN_ID: Lazy<ServerPlanId> = Lazy::new(|| ServerPlanId("100001001".into()));
 static DISK_PLAN_ID: Lazy<DiskPlanId> = Lazy::new(|| DiskPlanId(4.into()));
 
+const CONFIG_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/config.json"));
 const SETUP_SHELL_NOTE_CONTENT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/note/setup.sh"));
 
+static CONFIG: Lazy<Config> = Lazy::new(|| { Config::default() });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EquipmentKind {
@@ -42,6 +45,51 @@ impl EquipmentKind {
             Self::PrimaryServerSetupShellNote => format!("{}-server-setup-shell", prefix.as_ref()),
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Config {
+    #[serde()]
+    package: Vec<String>,
+
+    #[serde()]
+    wireguard: WireGuardConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        serde_json::from_str(CONFIG_JSON).unwrap()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct WireGuardConfig {
+    #[serde()]
+    interface: WireGuardInterfaceConfig,
+
+    #[serde()]
+    peer: WireGuardPeerConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct WireGuardInterfaceConfig {
+    #[serde()]
+    private_key: String,
+
+    #[serde()]
+    address: Vec<IpAddr>,
+
+    #[serde()]
+    dns: Vec<IpAddr>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct WireGuardPeerConfig {
+    #[serde()]
+    public_key: String,
+
+    #[serde()]
+    endpoint: IpAddr,
 }
 
 #[derive(Debug)]
@@ -135,6 +183,12 @@ impl PrimaryServerDisk {
             .enable_dhcp(false)
             .note_id_and_variables_pairs(vec![
                 (startup_shell_note_id.clone(), json!({
+                    "package_list_json": serde_json::to_string(&CONFIG.package).expect("no reason to fail"),
+                    "wireguard_interface_private_key": CONFIG.wireguard.interface.private_key,
+                    "wireguard_interface_address_list_json": serde_json::to_string(&CONFIG.wireguard.interface.address).expect("no reason to fail"),
+                    "wireguard_interface_dns_list_json": serde_json::to_string(&CONFIG.wireguard.interface.dns).expect("no reason to fail"),
+                    "wireguard_peer_public_key": CONFIG.wireguard.peer.public_key,
+                    "wireguard_peer_endpoint": CONFIG.wireguard.peer.endpoint,
                 }))
             ]);
 
