@@ -10,13 +10,15 @@ use crate::api::{
     ArchiveId,
     Switch, SwitchId, SwitchInfo,
     SshPublicKey, SshPublicKeyId, SshPublicKeyInfo,
-    Note,
+    Note, NoteInfo, NoteId, NoteClass,
     InterfaceDriver,
     Ipv4Net, // SingleLineIpv4Net,
 };
 
 static SERVER_PLAN_ID: Lazy<ServerPlanId> = Lazy::new(|| ServerPlanId("100001001".into()));
 static DISK_PLAN_ID: Lazy<DiskPlanId> = Lazy::new(|| DiskPlanId(4.into()));
+
+const SETUP_SHELL_NOTE_CONTENT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/note/setup.sh"));
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +28,7 @@ pub(crate) enum EquipmentKind {
     PrimaryServerSshPublicKey,
     PrimarySwitch,
     PrimaryVpcRouter,
+    PrimaryServerSetupShellNote,
 }
 
 impl EquipmentKind {
@@ -36,6 +39,7 @@ impl EquipmentKind {
             Self::PrimaryServerSshPublicKey => format!("{}-pub-key", prefix.as_ref()),
             Self::PrimarySwitch => format!("{}-switch", prefix.as_ref()),
             Self::PrimaryVpcRouter => format!("{}-vpc-router", prefix.as_ref()),
+            Self::PrimaryServerSetupShellNote => format!("{}-server-setup-shell", prefix.as_ref()),
         }
     }
 }
@@ -101,16 +105,16 @@ impl PrimaryServerDisk {
         prefix: impl AsRef<str>,
         server_id: impl Borrow<ServerId>,
         archive_id: impl Borrow<ArchiveId>,
+        startup_shell_note_id: impl Borrow<NoteId>,
         ssh_public_key_id: impl Borrow<SshPublicKeyId>,
         password: Option<&str>,
     ) -> Result<Self, Error> {
         let prefix = prefix.as_ref();
         let server_id = server_id.borrow();
         let archive_id = archive_id.borrow();
+        let startup_shell_note_id = startup_shell_note_id.borrow();
         let ssh_public_key_id = ssh_public_key_id.borrow();
         let name = Self::KIND.name(prefix);
-
-        let note = Note::official_startup_script().await?;
 
         let info = DiskInfo::builder()
             .name(name.clone())
@@ -130,7 +134,8 @@ impl PrimaryServerDisk {
             .change_partition_uuid(false)
             .enable_dhcp(false)
             .note_id_and_variables_pairs(vec![
-                (note.id().clone(), json!({ "usacloud": false, "updatepackage": true }))
+                (startup_shell_note_id.clone(), json!({
+                }))
             ]);
 
         if let Some(password) = password {
@@ -334,6 +339,56 @@ impl PrimaryVpcRouter {
 
     pub(crate) fn id(&self) -> &ApplianceId {
         self.appliance.id()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PrimaryServerSetupShellNote {
+    note: Note,
+}
+
+impl PrimaryServerSetupShellNote {
+    const KIND: EquipmentKind = EquipmentKind::PrimaryServerSetupShellNote;
+
+    pub(crate) async fn try_get(prefix: impl AsRef<str>) -> Result<Option<Self>, Error> {
+        let prefix = prefix.as_ref();
+        let name = Self::KIND.name(prefix);
+
+        let note = Note::get_by_name(&name).await?;
+        Ok(note.map(|note| Self { note }))
+    }
+    
+    pub(crate) async fn update_content_if_needed(id: impl Borrow<NoteId>) -> Result<(), Error> {
+        let id = id.borrow();
+        let note = Note::get(id).await?;
+        if note.content() == SETUP_SHELL_NOTE_CONTENT {
+            return Ok(());
+        }
+
+        let info = NoteInfo::builder()
+            .content(SETUP_SHELL_NOTE_CONTENT)
+            .build();
+        Note::update(id, info).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn create(prefix: impl AsRef<str>) -> Result<Self, Error> {
+        let prefix = prefix.as_ref();
+        let name = Self::KIND.name(prefix);
+
+        let info = NoteInfo::builder()
+            .name(name.clone())
+            .class(NoteClass::Shell)
+            .description(name.clone())
+            .content(SETUP_SHELL_NOTE_CONTENT)
+            .build();
+
+        let note = Note::create(info).await?;
+        Ok(Self { note })
+    }
+
+    pub(crate) fn id(&self) -> &NoteId {
+        &self.note.id()
     }
 }
 

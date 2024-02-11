@@ -20,6 +20,7 @@ use crate::{
         PrimaryServer,
         PrimaryServerDisk,
         PrimaryServerSshPublicKey,
+        PrimaryServerSetupShellNote,
     },
 };
 
@@ -142,6 +143,19 @@ impl UpdateCmd {
             log::info!("[DONE] vpc router available, ok");
         }
 
+        // Setup Script Note
+        let note = if let Some(note) = PrimaryServerSetupShellNote::try_get(prefix).await? {
+            log::info!("[CHECKED] note existence check: already exists, id: {}, ok", note.id());
+            log::info!("[START] note content updating if needed...");
+            PrimaryServerSetupShellNote::update_content_if_needed(note.id()).await?;
+            log::info!("[DONE] note content updated, ok");
+            note
+        } else {
+            log::info!("[START] note existence check: not exists, creating...");
+            let note = PrimaryServerSetupShellNote::create(prefix).await?;
+            log::info!("[DONE] note created, id: {}, ok", note.id());
+            note
+        };
 
         // Server
         let server = if let Some(server) = server {
@@ -195,7 +209,7 @@ impl UpdateCmd {
             log::info!("[DONE] search latest public ubuntu archive, id: {}, ok", archive.id());
 
             log::info!("[START] disk existence check: not exists, creating...");
-            let disk = PrimaryServerDisk::create_for_server(prefix, server.id(), archive.id(), ssh_public_key.id(), password).await?;
+            let disk = PrimaryServerDisk::create_for_server(prefix, server.id(), archive.id(), note.id(), ssh_public_key.id(), password).await?;
             log::info!("[DONE] disk created, id: {}, ok", disk.id());
 
             log::info!("[START] disk wait available...");
@@ -346,7 +360,6 @@ impl CleanCmd {
         Ok(())
     }
 }
-
 
 /* TODO remove old code
 pub(crate) async fn show_all_resources() -> Result<(), Error> {

@@ -121,6 +121,13 @@ impl ResourceKind {
         search_single_resource(path, filter, resource_name).await
     }
 
+    pub(crate) async fn get(&self, resource_id: impl AsRef<str>) -> Result<Value, Error> {
+        let resource_id = resource_id.as_ref();
+        let path = format!("{}/{}", self.path(), resource_id);
+        let resource_name = self.single_name();
+        fetch(path, resource_name).await
+    }
+
     pub(crate) async fn create(&self, resource_value: Value) -> Result<Value, Error> {
         let path = self.path();
         let resource_name = self.single_name();
@@ -152,6 +159,15 @@ impl ResourceKind {
             None => Err(Error::ResourceUnknownInstanceStatus),
         }
     }
+
+    /*
+    pub(crate) async fn search_all(&self) -> Result<Vec<Value>, Error> {
+        let path = self.path();
+        let resource_name = self.prural_name();
+
+        search(path, resource_name, None, None, None, 50).await
+    }
+    */
 
     pub(crate) async fn up_resource(&self, resource_id: impl AsRef<str>) -> Result<(), Error> {
         let resource_id = resource_id.as_ref();
@@ -1088,6 +1104,18 @@ impl Disk {
         ResourceKind::Disk.wait_available(disk_id.to_string()).await
     }
 
+    /*
+    pub(crate) async fn search_all() -> Result<Vec<Disk>, Error> {
+        let resource_values = ResourceKind::Disk.search_all().await?;
+        let mut disks = Vec::new();
+        for resource_value in resource_values {
+            let disk = Disk::from_value(resource_value)?;
+            disks.push(disk);
+        }
+        Ok(disks)
+    }
+    */
+
     pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
         serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Disk, e.to_string()))
     }
@@ -1568,19 +1596,37 @@ impl NoteRef {
 pub(crate) struct Note {
     #[serde(rename = "ID")]
     id: NoteId,
+
+    #[serde(flatten)]
+    info: NoteInfo,
 }
 
 impl Note {
-    pub(crate) async fn official_startup_script() -> Result<Note, Error> {
-        let resource_value = ResourceKind::Note.search_by_name("sys-startup-preinstall").await?;
-        let Some(resource_value) = resource_value else {
-            return Err(Error::ResourceNotFound("Note".to_string()));
-        };
+    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
+        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Note, e.to_string()))
+    }
+
+    pub(crate) async fn get_by_name(name: impl AsRef<str>) -> Result<Option<Self>, Error> {
+        let resource_value = ResourceKind::Note.search_by_name(name).await?;
+        resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
+    }
+
+    pub(crate) async fn get(id: impl Borrow<NoteId>) -> Result<Self, Error> {
+        let id = id.borrow();
+        let resource_value = ResourceKind::Note.get(id.to_string()).await?;
         Note::from_value(resource_value)
     }
 
-    pub(crate) fn from_value(value: Value) -> Result<Self, Error> {
-        serde_json::from_value(value).map_err(|e| Error::ResourceDeserializationFailed(ResourceKind::Note, e.to_string()))
+    pub(crate) async fn create(info: NoteInfo) -> Result<Note, Error> {
+        let info_value = info.to_value()?;
+        let res_value = ResourceKind::Note.create(info_value).await?;
+        Note::from_value(res_value)
+    }
+
+    pub(crate) async fn update(note_id: impl Borrow<NoteId>, info: NoteInfo) -> Result<(), Error> {
+        let note_id = note_id.borrow();
+        let info_value = info.to_value()?;
+        ResourceKind::Note.update(note_id.to_string(), info_value).await
     }
 
     /* commented out because it's not used
@@ -1592,6 +1638,89 @@ impl Note {
     pub(crate) fn id(&self) -> &NoteId {
         &self.id
     }
+
+    pub(crate) fn content(&self) -> &str {
+        self.info.content.as_deref().expect("responsibility of the caller to ensure content is set")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NoteInfo {
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+
+    #[serde(rename = "Class", skip_serializing_if = "Option::is_none")]
+    class: Option<NoteClass>,
+
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+
+    #[serde(rename = "Content", skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+}
+
+impl NoteInfo {
+    pub(crate) fn builder() -> NoteInfoBuilder {
+        NoteInfoBuilder::new()
+    }
+
+    pub(crate) fn to_value(&self) -> Result<Value, Error> {
+        serde_json::to_value(self).map_err(|e| Error::ResourceSerializationFailed(ResourceKind::Note, e.to_string()))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct NoteInfoBuilder {
+    name: Option<String>,
+    class: Option<NoteClass>,
+    description: Option<String>,
+    content: Option<String>,
+}
+
+impl NoteInfoBuilder {
+    fn new() -> Self {
+        Self {
+            name: None,
+            class: None,
+            description: None,
+            content: None,
+        }
+    }
+
+    pub(crate) fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub(crate) fn class(mut self, class: NoteClass) -> Self {
+        self.class = Some(class);
+        self
+    }
+
+    pub(crate) fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub(crate) fn content(mut self, content: impl Into<String>) -> Self {
+        self.content = Some(content.into());
+        self
+    }
+
+    pub(crate) fn build(self) -> NoteInfo {
+        NoteInfo {
+            name: self.name,
+            class: self.class,
+            description: self.description,
+            content: self.content,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NoteClass {
+    #[serde(rename = "shell")]
+    Shell,
 }
 
 
