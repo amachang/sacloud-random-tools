@@ -143,6 +143,15 @@ impl UpdateCmd {
             log::info!("[DONE] vpc router available, ok");
         }
 
+        // セットアップスクリプトのために一旦 Firewall は外す
+        log::info!("[START] vpc router config update without firewall for setup script...");
+        PrimaryVpcRouter::update_config(vpc_router.id(), false).await?;
+        Appliance::apply_config(vpc_router.id()).await?;
+        log::info!("[DONE] vpc router config updated without firewall, ok");
+
+        Appliance::wait_available(vpc_router.id()).await?;
+        log::info!("[CHECKED] vpc router availability check: ok");
+
         // Setup Script Note
         let note = if let Some(note) = PrimaryServerSetupShellNote::try_get(prefix).await? {
             log::info!("[CHECKED] note existence check: already exists, id: {}, ok", note.id());
@@ -232,7 +241,7 @@ impl UpdateCmd {
         log::info!("[CHECKED] server availability check: ok");
 
         log::info!("[START] vpc router config updating...");
-        PrimaryVpcRouter::update_config(vpc_router.id()).await?;
+        PrimaryVpcRouter::update_config(vpc_router.id(), false).await?;
         Appliance::apply_config(vpc_router.id()).await?;
         log::info!("[DONE] vpc router config updated, ok");
 

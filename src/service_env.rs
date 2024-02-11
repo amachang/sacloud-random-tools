@@ -335,7 +335,7 @@ impl PrimaryVpcRouter {
         Ok(Self { appliance })
     }
 
-    pub(crate) async fn update_config(vpc_router_id: impl Borrow<ApplianceId>) -> Result<(), Error> {
+    pub(crate) async fn update_config(vpc_router_id: impl Borrow<ApplianceId>, firewall_enabled: bool) -> Result<(), Error> {
         let vpc_router_id = vpc_router_id.borrow();
         let mut firewall_receive_config = Vec::new();
         let mut firewall_send_config = Vec::new();
@@ -344,12 +344,12 @@ impl PrimaryVpcRouter {
             firewall_receive_config.push(json!({ "Protocol": "ip", "SourceNetwork": format!("{}/32", local_ip), "Action": "allow", "Description": "local" }));
             firewall_send_config.push(json!({ "Protocol": "ip", "DestinationNetwork": format!("{}/32", local_ip), "Action": "allow", "Description": "local" }));
         }
-        firewall_receive_config.extend([
-            json!({ "Protocol": "ip", "Action": "deny", "Description": "otherwise" }),
-        ]);
-        firewall_send_config.extend([
-            json!({ "Protocol": "ip", "Action": "deny", "Description": "otherwise" }),
-        ]);
+
+        let wireguard_peer_endpoint_ip = CONFIG.wireguard.peer.endpoint;
+        firewall_send_config.push(json!({ "Protocol": "udp", "DestinationNetwork": format!("{}/32", wireguard_peer_endpoint_ip), "DestinationPort": "51820", "Action": "allow", "Description": "wireguard" }));
+
+        firewall_receive_config.push(json!({ "Protocol": "ip", "Action": "deny", "Description": "otherwise" }));
+        firewall_send_config.push(json!({ "Protocol": "ip", "Action": "deny", "Description": "otherwise" }));
 
         let info = ApplianceInfo::builder()
             .vpc_router_info(
@@ -368,7 +368,7 @@ impl PrimaryVpcRouter {
                                         "Send": firewall_send_config,
                                     },
                                     ],
-                                    "Enabled": "True"
+                                    "Enabled": if firewall_enabled { "True" } else { "False" },
                                 },
                                 "PortForwarding": {
                                     "Config": [ { "Protocol": "tcp", "GlobalPort": "10022", "PrivateAddress": "192.168.2.2", "PrivatePort": "22" } ],
