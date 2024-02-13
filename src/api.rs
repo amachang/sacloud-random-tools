@@ -45,6 +45,12 @@ pub(crate) enum Error {
     SearchApiInvalidIndexFrom(Option<u64>, String, Value),
     SearchApiInvalidResourceCount(String, Value),
     SearchApiInvalidResourceArray(Value, String, Value),
+    ApplianceDoesntHaveInterfaceInfo,
+    ApplianceInterfaceDoesntHaveConnectedSwitchInfo,
+    ApplianceInterfaceConnectedSwitchDoesntHaveScopeInfo,
+    ApplianceInterfaceHasSharedScopeButDoesntHaveIpAddress,
+    ApplianceHasNoSharedScopeInterface,
+    ApplianceHasMultipleSharedScopeInterfaces,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -552,7 +558,7 @@ impl ServerInfoBuilder {
     }
 
     pub(crate) fn connected_switch_ids(mut self, connected_switches: Vec<SwitchId>) -> Self {
-        self.connected_switches = Some(connected_switches.into_iter().map(|id| ConnectedSwitch::Switch(SwitchRef { id })).collect());
+        self.connected_switches = Some(connected_switches.into_iter().map(|id| ConnectedSwitch::Switch(SwitchRef { id, scope: None, })).collect());
         self
     }
 
@@ -651,6 +657,9 @@ impl From<String> for SwitchId {
 pub(crate) struct SwitchRef {
     #[serde(rename = "ID")]
     id: SwitchId,
+
+    #[serde(rename = "Scope", skip_serializing_if = "Option::is_none")]
+    scope: Option<SwitchScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -770,6 +779,14 @@ impl SwitchInfoBuilder {
             description: self.description,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SwitchScope {
+    #[serde(rename = "shared")]
+    Shared,
+    #[serde(rename = "user")]
+    User,
 }
 
 // Appliance
@@ -898,6 +915,34 @@ impl Appliance {
     pub(crate) fn id(&self) -> &ApplianceId {
         &self.id
     }
+
+    pub(crate) fn public_shared_ip(&self) -> Result<Ipv4Addr, Error> {
+        let Some(interfaces) = self.info.interfaces.as_ref() else {
+            return Err(Error::ApplianceDoesntHaveInterfaceInfo);
+        };
+        let mut shared_ips = Vec::new();
+        for interface in interfaces {
+            let Some(siwth) = interface.switch.as_ref() else {
+                return Err(Error::ApplianceInterfaceDoesntHaveConnectedSwitchInfo);
+            };
+            let Some(scope) = siwth.scope.as_ref() else {
+                return Err(Error::ApplianceInterfaceConnectedSwitchDoesntHaveScopeInfo);
+            };
+            if *scope == SwitchScope::Shared {
+                let Some(ip_address) = interface.ip_address else {
+                    return Err(Error::ApplianceInterfaceHasSharedScopeButDoesntHaveIpAddress);
+                };
+                shared_ips.push(ip_address);
+            }
+        }
+        if shared_ips.len() == 0 {
+            Err(Error::ApplianceHasNoSharedScopeInterface)
+        } else if shared_ips.len() > 1 {
+            Err(Error::ApplianceHasMultipleSharedScopeInterfaces)
+        } else {
+            Ok(shared_ips[0])
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -910,6 +955,9 @@ pub(crate) struct ApplianceInfo {
 
     #[serde(rename = "Class", skip_serializing_if = "Option::is_none")]
     class: Option<ApplianceClass>,
+
+    #[serde(rename = "Interfaces", skip_serializing_if = "Option::is_none")]
+    interfaces: Option<Vec<ApplianceInterface>>,
 
     #[serde(flatten)]
     class_info: Option<ApplianceClassInfo>,
@@ -968,10 +1016,23 @@ impl ApplianceInfoBuilder {
         ApplianceInfo {
             name: self.name,
             description: self.description,
+            interfaces: None,
             class: self.class,
             class_info: self.class_info,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ApplianceInterface {
+    #[serde(rename = "IPAddress", skip_serializing_if = "Option::is_none")]
+    ip_address: Option<Ipv4Addr>,
+
+    #[serde(rename = "UserIPAddress", skip_serializing_if = "Option::is_none")]
+    user_ip_address: Option<Ipv4Addr>,
+
+    #[serde(rename = "Switch", skip_serializing_if = "Option::is_none")]
+    switch: Option<SwitchRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1269,9 +1330,6 @@ pub(crate) enum DiskConnection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskConfig {
-    #[serde(rename = "Password", skip_serializing_if = "Option::is_none")]
-    password: Option<String>,
-
     #[serde(rename = "HostName", skip_serializing_if = "Option::is_none")]
     host_name: Option<String>,
 
@@ -1309,7 +1367,6 @@ impl DiskConfig {
 
 #[derive(Debug)]
 pub(crate) struct DiskConfigBuilder {
-    password: Option<String>,
     host_name: Option<String>,
     ssh_keys: Option<Vec<SshPublicKeyRef>>,
     change_partition_uuid: Option<bool>,
@@ -1323,7 +1380,6 @@ pub(crate) struct DiskConfigBuilder {
 impl DiskConfigBuilder {
     fn new() -> Self {
         Self {
-            password: None,
             host_name: None,
             ssh_keys: None,
             change_partition_uuid: None,
@@ -1333,11 +1389,6 @@ impl DiskConfigBuilder {
             enable_dhcp: None,
             notes: None
         }
-    }
-
-    pub(crate) fn password(mut self, password: impl Into<String>) -> Self {
-        self.password = Some(password.into());
-        self
     }
 
     pub(crate) fn host_name(mut self, host_name: impl Into<String>) -> Self {
@@ -1375,17 +1426,16 @@ impl DiskConfigBuilder {
         self
     }
 
-    pub(crate) fn setup_shell_note(mut self, id: NoteId, api_key_id: ApiKeyId, variables: Value) -> Self {
+    pub(crate) fn setup_shell_note(mut self, id: NoteId, variables: Value) -> Self {
         if self.notes.is_none() {
             self.notes = Some(Vec::new());
         }
-        self.notes.as_mut().unwrap().push(NoteRef { id, api_key: ApiKeyRef { id: api_key_id }, variables });
+        self.notes.as_mut().unwrap().push(NoteRef { id, variables });
         self
     }
 
     pub(crate) fn build(self) -> DiskConfig {
         DiskConfig {
-            password: self.password,
             host_name: self.host_name,
             ssh_keys: self.ssh_keys,
             change_partition_uuid: self.change_partition_uuid,
@@ -1601,9 +1651,6 @@ impl From<String> for NoteId {
 pub(crate) struct NoteRef {
     #[serde(rename = "ID")]
     id: NoteId,
-
-    #[serde(rename = "APIKey")]
-    api_key: ApiKeyRef,
 
     #[serde(rename = "Variables")]
     variables: Value,
@@ -2219,7 +2266,6 @@ mod tests {
         let archive_id = ArchiveId("ARCHIVE_ID".into());
         let server_id = ServerId("SERVER_ID".into());
         let ssh_public_key_id = SshPublicKeyId("SSH_PUBLIC_KEY_ID".into());
-        let password = "PASSWORD".to_string();
         let note_id = NoteId("NOTE_ID".into());
 
         let info = DiskInfo::builder()
@@ -2243,7 +2289,6 @@ mod tests {
                 (note_id.clone(), json!({ "usacloud": false, "updatepackage": true }))
             ])
             .disable_pw_auth(false)
-            .password(password.clone())
             .build();
 
         assert_eq!(serde_json::to_value(json!({ "Disk": &info, "Config": &config })).unwrap(), json!({
@@ -2257,7 +2302,6 @@ mod tests {
                 "Server": { "ID": "SERVER_ID" },
             },
             "Config":{
-                "Password": "PASSWORD",
                 "HostName": "NAME",
                 "SSHKeys": [{"ID": "SSH_PUBLIC_KEY_ID"}],
                 "ChangePartitionUUID": false,

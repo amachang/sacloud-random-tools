@@ -6,7 +6,6 @@ use tokio::time::sleep;
 
 use crate::api::{
     self,
-    ZONE,
     Server, ServerId, ServerInfo, ServerPlanId,
     Disk, DiskId, DiskInfo, DiskPlanId, DiskConnection, DiskConfig,
     Appliance, ApplianceId, ApplianceInfo, VpcRouterInfo, VpcRouterPlanId,
@@ -15,17 +14,17 @@ use crate::api::{
     SshPublicKey, SshPublicKeyId, SshPublicKeyInfo,
     Note, NoteInfo, NoteId, NoteClass,
     InterfaceDriver,
-    ApiKeyId,
     Ipv4Net, // SingleLineIpv4Net,
 };
 
 static SERVER_PLAN_ID: Lazy<ServerPlanId> = Lazy::new(|| ServerPlanId("100001001".into()));
 static DISK_PLAN_ID: Lazy<DiskPlanId> = Lazy::new(|| DiskPlanId(4.into()));
 
+pub(crate) const PRIMARY_SERVER_FORWARDED_PORT: u16 = 10022;
 const CONFIG_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/config.json"));
 const SETUP_SHELL_NOTE_CONTENT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/note/setup.sh"));
 
-static CONFIG: Lazy<Config> = Lazy::new(|| { Config::default() });
+pub(crate) static CONFIG: Lazy<Config> = Lazy::new(|| { Config::default() });
 
 #[derive(Debug, Serialize)]
 pub(crate) enum Error {
@@ -67,17 +66,11 @@ impl EquipmentKind {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Config {
     #[serde()]
-    api_key_id: ApiKeyId,
-
-    #[serde()]
-    server: ServerConfig,
+    pub(crate) server: ServerConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ServerConfig {
-    #[serde()]
-    package: Vec<String>,
-
     #[serde()]
     wireguard: WireGuardConfig,
 }
@@ -210,7 +203,6 @@ impl PrimaryServerDisk {
         archive_id: impl Borrow<ArchiveId>,
         startup_shell_note_id: impl Borrow<NoteId>,
         ssh_public_key_id: impl Borrow<SshPublicKeyId>,
-        password: Option<&str>,
     ) -> Result<Self, Error> {
         let prefix = prefix.as_ref();
         let server_id = server_id.borrow();
@@ -229,34 +221,16 @@ impl PrimaryServerDisk {
             .server_id(server_id.clone())
             .build();
 
-        let mut config_builder = DiskConfig::builder()
+        let config = DiskConfig::builder()
             .host_name(name.clone())
             .ssh_key_ids(vec![ssh_public_key_id.clone()])
             .user_ip_address(Ipv4Addr::new(192, 168, 2, 2))
             .user_subnet(Ipv4Net::new(Ipv4Addr::new(192, 168, 2, 1), 24))
             .change_partition_uuid(false)
             .enable_dhcp(false)
-            .setup_shell_note(startup_shell_note_id.clone(), CONFIG.api_key_id.clone(), json!({
-                "server_id": server_id,
-                "zone": ZONE.clone(),
-                "package_list_json": serde_json::to_string(&CONFIG.server.package).expect("no reason to fail"),
-                "wireguard_interface_private_key": CONFIG.server.wireguard.interface.private_key,
-                "wireguard_interface_address_list_json": serde_json::to_string(&CONFIG.server.wireguard.interface.address).expect("no reason to fail"),
-                "wireguard_interface_dns_list_json": serde_json::to_string(&CONFIG.server.wireguard.interface.dns).expect("no reason to fail"),
-                "wireguard_peer_public_key": CONFIG.server.wireguard.peer.public_key,
-                "wireguard_peer_endpoint": CONFIG.server.wireguard.peer.endpoint,
-            }));
-
-        if let Some(password) = password {
-            config_builder = config_builder
-                .disable_pw_auth(false)
-                .password(password);
-        } else {
-            config_builder = config_builder
-                .disable_pw_auth(true);
-        }
-
-        let config = config_builder.build();
+            .disable_pw_auth(true)
+            .setup_shell_note(startup_shell_note_id.clone(), json!({}))
+            .build();
 
         let disk = Disk::create(info, config).await?;
 
@@ -426,7 +400,7 @@ impl PrimaryVpcRouter {
                                     "Enabled": if firewall_enabled { "True" } else { "False" },
                                 },
                                 "PortForwarding": {
-                                    "Config": [ { "Protocol": "tcp", "GlobalPort": "10022", "PrivateAddress": "192.168.2.2", "PrivatePort": "22" } ],
+                                    "Config": [ { "Protocol": "tcp", "GlobalPort": PRIMARY_SERVER_FORWARDED_PORT.to_string(), "PrivateAddress": "192.168.2.2", "PrivatePort": "22" } ],
                                     "Enabled": "True",
                                 },
                                 "WireGuardServer": {
@@ -448,6 +422,11 @@ impl PrimaryVpcRouter {
 
     pub(crate) fn id(&self) -> &ApplianceId {
         self.appliance.id()
+    }
+
+    pub(crate) fn public_shared_ip(&self) -> Result<Ipv4Addr, Error> {
+        let ip = self.appliance.public_shared_ip()?;
+        Ok(ip)
     }
 }
 

@@ -4,7 +4,9 @@ use serde_json::to_string_pretty;
 
 mod cmd;
 mod api;
+mod ssh;
 mod service_env;
+mod service_script;
 
 #[derive(Debug, Parser)]
 struct Args {

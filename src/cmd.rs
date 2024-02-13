@@ -24,16 +24,21 @@ use crate::{
         PrimaryServerSshPublicKey,
         PrimaryServerSetupShellNote,
     },
+    service_script::{
+        self,
+        ServiceScript,
+    },
 };
 
 #[derive(Debug, Serialize)]
 pub(crate) enum Error {
     PrimaryServerNotConnectedToSwitch(ServerId, SwitchId),
-    PrimaryServerNotFoundAndNeedsToBeCreatedButLoginMethodNotGiven,
     PrimarySwitchNotConnectedToVpcRouter(SwitchId, ApplianceId),
     PrimarySshPublicKeyAlreadyRegisteredButMismatch(SshPublicKeyId, String, String),
     PrimarySshPublicKeyNotGivenForNewServerDisk,
     PrimarySshPublicKeyGivenButCouldntRead(PathBuf, String),
+    PrimaryVpcRouterNotExists,
+    ServiceScriptError(service_script::Error),
     ApiError(api::Error),
     ServiceEnvError(service_env::Error),
 }
@@ -47,6 +52,12 @@ impl From<api::Error> for Error {
 impl From<service_env::Error> for Error {
     fn from(e: service_env::Error) -> Self {
         Error::ServiceEnvError(e)
+    }
+}
+
+impl From<service_script::Error> for Error {
+    fn from(e: service_script::Error) -> Self {
+        Error::ServiceScriptError(e)
     }
 }
 
@@ -70,36 +81,19 @@ pub(crate) struct UpdateCmd {
     #[arg(long)]
     prefix: String,
 
-    #[arg(long)]
-    pubkey: Option<PathBuf>,
-
-    #[arg(long)]
-    password: Option<String>,
+    #[arg(long, default_value = "~/.ssh/id_rsa.pub")]
+    pubkey: PathBuf,
 }
 
 impl UpdateCmd {
     pub(crate) async fn run(&self) -> Result<(), Error> {
         let prefix = self.prefix.as_str();
+        let ssh_public_key_path = self.pubkey.as_path();
 
-        let login_method_supplies = self.pubkey.is_some() || self.password.is_some();
-
-        let ssh_public_key = if let Some(ssh_public_key_path) = &self.pubkey {
-            match fs::read_to_string(ssh_public_key_path).await {
-                Ok(ssh_public_key) => Some(ssh_public_key),
-                Err(e) => return Err(Error::PrimarySshPublicKeyGivenButCouldntRead(ssh_public_key_path.clone(), e.to_string())),
-            }
-        } else {
-            None
+        let ssh_public_key = match fs::read_to_string(ssh_public_key_path).await {
+            Ok(ssh_public_key) => Some(ssh_public_key),
+            Err(e) => return Err(Error::PrimarySshPublicKeyGivenButCouldntRead(ssh_public_key_path.to_path_buf(), e.to_string())),
         };
-        let password = self.password.as_deref();
-
-        let server = PrimaryServer::try_get(prefix).await?;
-        if server.is_none() {
-            if !login_method_supplies {
-                return Err(Error::PrimaryServerNotFoundAndNeedsToBeCreatedButLoginMethodNotGiven);
-            }
-            log::info!("[CHECKED] login method check for server creation: ok");
-        }
 
         // VPC Router
         let vpc_router = if let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? {
@@ -178,7 +172,7 @@ impl UpdateCmd {
         };
 
         // Server
-        let server = if let Some(server) = server {
+        let server = if let Some(server) = PrimaryServer::try_get(prefix).await? {
             log::info!("[CHECKED] server existence check: already exists, id: {}, ok", server.id());
             let is_connected = Server::is_connected_to_switch(server.id(), switch.id()).await?;
             if !is_connected {
@@ -229,7 +223,7 @@ impl UpdateCmd {
             log::info!("[DONE] search latest public ubuntu archive, id: {}, ok", archive.id());
 
             log::info!("[START] disk existence check: not exists, creating...");
-            let disk = PrimaryServerDisk::create_for_server(prefix, server.id(), archive.id(), note.id(), ssh_public_key.id(), password).await?;
+            let disk = PrimaryServerDisk::create_for_server(prefix, server.id(), archive.id(), note.id(), ssh_public_key.id()).await?;
             log::info!("[DONE] disk created, id: {}, ok", disk.id());
 
             log::info!("[START] disk wait available...");
@@ -240,19 +234,13 @@ impl UpdateCmd {
         Server::wait_available(server.id()).await?;
         log::info!("[CHECKED] server availability check: ok");
 
-        if Server::is_up(server.id()).await? {
-            log::info!("[START] restart server...");
-            Server::down(server.id()).await?;
-            Server::wait_down(server.id()).await?;
-            Server::up(server.id()).await?;
-            Server::wait_up(server.id()).await?;
-            log::info!("[DONE] server restarted, ok");
-        } else {
+        if !Server::is_up(server.id()).await? {
             log::info!("[START] server booting...");
             Server::up(server.id()).await?;
             Server::wait_up(server.id()).await?;
             log::info!("[DONE] server booted, ok");
         }
+
         Server::wait_available(server.id()).await?;
         log::info!("[CHECKED] server availability check: ok");
 
@@ -260,13 +248,36 @@ impl UpdateCmd {
         PrimaryServer::wait_for_setup_shell_note_done(server.id()).await?;
         log::info!("[DONE] server setup script done, ok");
 
-        log::info!("[START] vpc router config updating...");
-        PrimaryVpcRouter::update_config(vpc_router.id(), true).await?;
-        Appliance::apply_config(vpc_router.id()).await?;
-        log::info!("[DONE] vpc router config updated, ok");
+        log::info!("[START] prepare setup script for server...");
+        let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? else {
+            return Err(Error::PrimaryVpcRouterNotExists);
+        };
+        let public_shared_ip = vpc_router.public_shared_ip()?;
+        ServiceScript::prepare_for_server(public_shared_ip, "ubuntu", ssh_public_key_path).await?;
+        log::info!("[DONE] setup script prepared, ok");
 
-        Appliance::wait_available(vpc_router.id()).await?;
-        log::info!("[CHECKED] vpc router availability check: ok");
+        log::info!("[START] restart server for running setup script...");
+        Server::down(server.id()).await?;
+        Server::wait_down(server.id()).await?;
+        Server::up(server.id()).await?;
+        Server::wait_up(server.id()).await?;
+        log::info!("[DONE] server restarted for running setup script, ok");
+
+        log::info!("[START] wait for server setup script finished...");
+        ServiceScript::wait_for_done(public_shared_ip, "ubuntu", ssh_public_key_path).await?;
+        log::info!("[DONE] server setup script finished, ok");
+
+
+        {
+            // TODO RAII pattern bellows for ensuring the firewall is restored
+            log::info!("[START] vpc router config updating...");
+            PrimaryVpcRouter::update_config(vpc_router.id(), true).await?;
+            Appliance::apply_config(vpc_router.id()).await?;
+            log::info!("[DONE] vpc router config updated, ok");
+
+            Appliance::wait_available(vpc_router.id()).await?;
+            log::info!("[CHECKED] vpc router availability check: ok");
+        }
 
         log::info!("[DONE] all checks passed, ok");
         Ok(())
