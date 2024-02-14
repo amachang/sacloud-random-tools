@@ -68,7 +68,7 @@ pub(crate) struct Config {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ServerConfig {
     #[serde()]
-    wireguard: WireGuardConfig,
+    pub(crate) wireguard: WireGuardConfig,
 }
 
 impl Default for Config {
@@ -80,32 +80,32 @@ impl Default for Config {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct WireGuardConfig {
     #[serde()]
-    interface: WireGuardInterfaceConfig,
+    pub(crate) interface: WireGuardInterfaceConfig,
 
     #[serde()]
-    peer: WireGuardPeerConfig,
+    pub(crate) peer: WireGuardPeerConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct WireGuardInterfaceConfig {
     #[serde()]
-    private_key: String,
+    pub(crate) private_key: String,
 
     // 雑
     #[serde()]
-    address: Vec<String>,
+    pub(crate) address: Vec<String>,
 
     #[serde()]
-    dns: Vec<IpAddr>,
+    pub(crate) dns: Vec<IpAddr>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct WireGuardPeerConfig {
     #[serde()]
-    public_key: String,
+    pub(crate) public_key: String,
 
     #[serde()]
-    endpoint: IpAddr,
+    pub(crate) endpoint: IpAddr,
 }
 
 #[derive(Debug)]

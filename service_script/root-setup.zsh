@@ -10,6 +10,22 @@ autoload -Uz throw
 function ensure_packages() {
     echo "Ensure packages..."
 
+    # 時々、 DNS 解決が遅れることがあるため、いろいろ確認
+    while ! nslookup -timeout=1 -type=A archive.ubuntu.com > /dev/null; do
+        echo "Waiting for DNS resolution of archive.ubuntu.com..."
+        sleep 5
+    done
+
+    while ! nc -zv archive.ubuntu.com 80 > /dev/null; do
+        echo "Waiting for connection to archive.ubuntu.com port 80..."
+        sleep 5
+    done
+
+    while ! curl -s --head http://archive.ubuntu.com/ > /dev/null; do
+        echo "Waiting for response from archive.ubuntu.com..."
+        sleep 5
+    done
+
     # needrestart の interactive モードを無効化
     if ! [[ -f /etc/needrestart/conf.d/50-autorestart.conf ]]; then
         mkdir -p /etc/needrestart/conf.d || throw AptError
@@ -33,6 +49,7 @@ function setup_user() {
 
     if [ -f /home/ubuntu/user-setup.zsh ]; then
         sudo -i -u ubuntu zsh /home/ubuntu/user-setup.zsh || throw UserSetupError
+        rm /home/ubuntu/user-setup.zsh || throw UserSetupError
     fi
 
     echo "Setup user...done"
@@ -156,6 +173,72 @@ function enable_auto_start_wireguard() {
     echo "Enable auto start WireGuard...done"
 }
 
+# -- ipinfo.io --
+
+function ip_and_country_from_ipinfo_io() {
+    if ! nslookup -timeout=1 -type=A ipinfo.io > /dev/null; then
+        echo "Failed to resolve ipinfo.io. You are not connected to the internet."
+        throw IpinfoIoError
+    fi
+
+    if ! nc -zv ipinfo.io 443 > /dev/null; then
+        echo "Failed to connect to ipinfo.io port 443"
+        throw IpinfoIoError
+    fi
+
+    curl -s https://ipinfo.io || throw IpinfoIoError
+}
+
+# -- ensure directly connected internet --
+
+function ensure_directly_connected_internet() {
+    echo "Ensure directly connected internet..."
+
+    local router_ip={{public_shared_ip}}
+    local sacloud_country="JP"
+
+    local info_json=$(ip_and_country_from_ipinfo_io) || throw DirectlyConnectedInternetError
+    local expected_ip=$(echo "$info_json" | grep '"ip":' | cut -d '"' -f 4)
+    local expected_country=$(echo "$info_json" | grep '"country":' | cut -d '"' -f 4)
+
+    if [[ "$expected_ip" != "$router_ip" ]]; then
+        echo "You are not connected to the internet directly. $expected_ip != $router_ip"
+        throw DirectlyConnectedInternetError
+    fi
+
+    if [[ "$expected_country" != "$sacloud_country" ]]; then
+        echo "You are not connected to the internet directly. $expected_country != $sacloud_country"
+        throw DirectlyConnectedInternetError
+    fi
+
+    echo "Ensure directly connected internet...done"
+}
+
+# -- ensure connected internet through wireguard --
+
+function ensure_connected_internet_through_wireguard() {
+    echo "Ensure connected internet through WireGuard..."
+
+    local router_ip={{public_shared_ip}}
+    local sacloud_country="JP"
+
+    local info_json=$(ip_and_country_from_ipinfo_io) || throw WireGuardConnectedInternetError
+    local observed_ip=$(echo "$info_json" | grep '"ip":' | cut -d '"' -f 4)
+    local observed_country=$(echo "$info_json" | grep '"country":' | cut -d '"' -f 4)
+
+    if [[ "$observed_ip" == "$router_ip" ]]; then
+        echo "You are connected to the internet directly, must be through WireGuard in this stage, $observed_ip == $router_ip"
+        throw WireGuardConnectedInternetError
+    fi
+
+    if [[ "$observed_country" == "$sacloud_country" ]]; then
+        echo "VPN connected to the internet, as the same country as the server, $observed_country == $sacloud_country"
+        throw WireGuardConnectedInternetError
+    fi
+
+    echo "Ensure connected internet through WireGuard...done"
+}
+
 # -- main --
 
 {
@@ -165,6 +248,8 @@ function enable_auto_start_wireguard() {
 
     disable_auto_start_and_stop_wireguard_for_update
 
+    ensure_directly_connected_internet
+
     ensure_packages
     setup_user
     # add new setup here
@@ -172,6 +257,8 @@ function enable_auto_start_wireguard() {
     setup_wireguard
 } always {
     enable_auto_start_wireguard
+
+    ensure_connected_internet_through_wireguard
 
     if [[ -f /home/ubuntu/root_setup_not_yet_finished_once ]]; then
         rm /home/ubuntu/root_setup_not_yet_finished_once

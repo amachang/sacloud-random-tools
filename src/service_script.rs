@@ -51,10 +51,13 @@ pub(crate) enum ServiceScript {
 
 impl ServiceScript {
     pub(crate) async fn prepare_for_server(ip: Ipv4Addr, user: impl AsRef<str>, pubkey_path: impl AsRef<Path>) -> Result<(), Error> {
-        let server_info = &CONFIG.server;
-        let root_setup_script = Self::RootSetup.render(&server_info)?;
+        let render_params = upon::value!{
+            wireguard: &CONFIG.server.wireguard,
+            public_shared_ip: ip,
+        };
+        let root_setup_script = Self::RootSetup.render(&render_params)?;
         log::trace!("[SETUP_SCRIPT] rendered root_setup.zsh: {}", root_setup_script);
-        let user_setup_script = Self::UserSetup.render(&server_info)?;
+        let user_setup_script = Self::UserSetup.render(&render_params)?;
         log::trace!("[SETUP_SCRIPT] rendered user_setup.zsh: {}", user_setup_script);
         let root_setup_script = root_setup_script.as_bytes();
         let user_setup_script = user_setup_script.as_bytes();
