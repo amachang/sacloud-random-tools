@@ -1,8 +1,7 @@
-use std::{borrow::Borrow, net::{IpAddr, Ipv4Addr}, time::Duration};
+use std::{borrow::Borrow, net::{IpAddr, Ipv4Addr}};
 use once_cell::sync::Lazy;
 use serde_json::json;
 use serde::{Serialize, Deserialize};
-use tokio::time::sleep;
 
 use crate::api::{
     self,
@@ -29,9 +28,6 @@ pub(crate) static CONFIG: Lazy<Config> = Lazy::new(|| { Config::default() });
 #[derive(Debug, Serialize)]
 pub(crate) enum Error {
     ApiError(api::Error),
-    PrimaryServerSetupShellNoteHasMultipleTags(Vec<String>),
-    PrimaryServerSetupShellNoteFailed,
-    PrimaryServerSetupShellNoteUnknownTag(String),
 }
 
 impl From<api::Error> for Error {
@@ -152,33 +148,6 @@ impl PrimaryServer {
         self.server.id()
     }
 
-    pub(crate) async fn wait_for_setup_shell_note_done(id: impl Borrow<ServerId>) -> Result<(), Error> {
-        let id = id.borrow();
-        loop {
-            let server = Server::get(id).await?;
-            let tags_for_setup = server.tags().into_iter()
-                .filter(|tag| tag.starts_with("setup-"))
-                .map(|tag| tag.to_string()).collect::<Vec<_>>();
-            if tags_for_setup.len() == 0 {
-                log::debug!("[WAIT_STARTUP] script not started yet");
-            } else if tags_for_setup.len() > 1 {
-                return Err(Error::PrimaryServerSetupShellNoteHasMultipleTags(tags_for_setup));
-            } else {
-                let tag = tags_for_setup.first().expect("checked");
-                if tag == "setup-done" {
-                    log::debug!("[WAIT_STARTUP] script done");
-                    return Ok(());
-                } else if tag == "setup-failed" {
-                    return Err(Error::PrimaryServerSetupShellNoteFailed);
-                } else if tag == "setup-running" {
-                    log::debug!("[WAIT_STARTUP] script running");
-                } else {
-                    return Err(Error::PrimaryServerSetupShellNoteUnknownTag(tag.to_string()));
-                }
-            }
-            sleep(Duration::from_secs(5)).await;
-        }
-    }
 }
 
 #[derive(Debug)]

@@ -57,7 +57,7 @@ function setup_vim() {
         mkdir -p "$HOME/.config/nvim" || throw VimError
     fi
 
-    cat <<EOF >"$HOME/.config/nvim/init.vim || throw VimError"
+    cat <<EOF >"$HOME/.config/nvim/init.vim" || throw VimError
 "" general settings
 
 set encoding=utf-8 " not necessary in unix env, but for windows env

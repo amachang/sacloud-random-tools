@@ -2,6 +2,7 @@ use std::{path::PathBuf, io, time::Duration};
 use clap::{Parser, Subcommand};
 use tokio::{fs, time::sleep};
 use serde::Serialize;
+use dirs::home_dir;
 
 use crate::{
     api::{
@@ -81,18 +82,32 @@ pub(crate) struct UpdateCmd {
     #[arg(long)]
     prefix: String,
 
-    #[arg(long, default_value = "~/.ssh/id_rsa.pub")]
-    pubkey: PathBuf,
+    #[arg(long)]
+    pubkey: Option<PathBuf>,
+
+    #[arg(long)]
+    privkey: Option<PathBuf>,
 }
 
 impl UpdateCmd {
     pub(crate) async fn run(&self) -> Result<(), Error> {
+        let home_dir = home_dir().expect("home dir is prerequisite");
         let prefix = self.prefix.as_str();
-        let ssh_public_key_path = self.pubkey.as_path();
+        let ssh_public_key_path = if let Some(ssh_public_key_path) = self.pubkey.as_ref() {
+            ssh_public_key_path.to_path_buf()
+        } else {
+            home_dir.join(".ssh/id_rsa.pub")
+        };
 
-        let ssh_public_key = match fs::read_to_string(ssh_public_key_path).await {
+        let ssh_private_key_path = if let Some(ssh_private_key_path) = self.privkey.as_ref() {
+            ssh_private_key_path.to_path_buf()
+        } else {
+            home_dir.join(".ssh/id_rsa")
+        };
+
+        let ssh_public_key = match fs::read_to_string(&ssh_public_key_path).await {
             Ok(ssh_public_key) => Some(ssh_public_key),
-            Err(e) => return Err(Error::PrimarySshPublicKeyGivenButCouldntRead(ssh_public_key_path.to_path_buf(), e.to_string())),
+            Err(e) => return Err(Error::PrimarySshPublicKeyGivenButCouldntRead(ssh_public_key_path, e.to_string())),
         };
 
         // VPC Router
@@ -241,19 +256,12 @@ impl UpdateCmd {
             log::info!("[DONE] server booted, ok");
         }
 
-        Server::wait_available(server.id()).await?;
-        log::info!("[CHECKED] server availability check: ok");
-
-        log::info!("[START] wait for server setup script...");
-        PrimaryServer::wait_for_setup_shell_note_done(server.id()).await?;
-        log::info!("[DONE] server setup script done, ok");
-
         log::info!("[START] prepare setup script for server...");
         let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? else {
             return Err(Error::PrimaryVpcRouterNotExists);
         };
         let public_shared_ip = vpc_router.public_shared_ip()?;
-        ServiceScript::prepare_for_server(public_shared_ip, "ubuntu", ssh_public_key_path).await?;
+        ServiceScript::prepare_for_server(public_shared_ip, "ubuntu", &ssh_private_key_path).await?;
         log::info!("[DONE] setup script prepared, ok");
 
         log::info!("[START] restart server for running setup script...");
@@ -264,7 +272,7 @@ impl UpdateCmd {
         log::info!("[DONE] server restarted for running setup script, ok");
 
         log::info!("[START] wait for server setup script finished...");
-        ServiceScript::wait_for_done(public_shared_ip, "ubuntu", ssh_public_key_path).await?;
+        ServiceScript::wait_for_done(public_shared_ip, "ubuntu", &ssh_private_key_path).await?;
         log::info!("[DONE] server setup script finished, ok");
 
 

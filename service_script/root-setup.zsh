@@ -45,8 +45,8 @@ function setup_wireguard() {
 
     # WireGuard の情報を取得
     local wireguard_interface_private_key={{wireguard.interface.private_key}}
-    local -a wireguard_interface_address_list={{wireguard.interface.address_list}}
-    local -a wireguard_interface_dns_list={{wireguard.interface.dns_list}}
+    local -a wireguard_interface_address_list={{wireguard.interface.address}}
+    local -a wireguard_interface_dns_list={{wireguard.interface.dns}}
     local wireguard_peer_public_key={{wireguard.peer.public_key}}
     local wireguard_peer_endpoint={{wireguard.peer.endpoint}}
 

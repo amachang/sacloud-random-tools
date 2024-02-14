@@ -27,7 +27,8 @@ pub(crate) enum Error {
     RenderError(String),
     IllegallyStopped,
     Failed,
-    Timeout,
+    TimeoutToStart,
+    TimeoutToFinish,
     SshError(ssh::Error),
 }
 
@@ -52,58 +53,78 @@ impl ServiceScript {
     pub(crate) async fn prepare_for_server(ip: Ipv4Addr, user: impl AsRef<str>, pubkey_path: impl AsRef<Path>) -> Result<(), Error> {
         let server_info = &CONFIG.server;
         let root_setup_script = Self::RootSetup.render(&server_info)?;
-        log::debug!("[SETUP_SCRIPT] rendered root_setup.zsh: {}", root_setup_script);
+        log::trace!("[SETUP_SCRIPT] rendered root_setup.zsh: {}", root_setup_script);
         let user_setup_script = Self::UserSetup.render(&server_info)?;
-        log::debug!("[SETUP_SCRIPT] rendered user_setup.zsh: {}", user_setup_script);
+        log::trace!("[SETUP_SCRIPT] rendered user_setup.zsh: {}", user_setup_script);
         let root_setup_script = root_setup_script.as_bytes();
         let user_setup_script = user_setup_script.as_bytes();
 
-        log::debug!("[SETUP_SCRIPT] connecting to server for put scripts...: {}", ip);
+        log::trace!("[SETUP_SCRIPT] connecting to server for put scripts...: {}", ip);
         let session = Session::connect(ip, PRIMARY_SERVER_FORWARDED_PORT, user, pubkey_path).await?;
         session.put_file("root-setup.zsh", root_setup_script).await?;
         session.put_file("user-setup.zsh", user_setup_script).await?;
         session.put_file("root_setup_not_yet_started_once", &b""[..]).await?;
         session.put_file("root_setup_not_yet_finished_once", &b""[..]).await?;
         session.put_file("root_setup_not_yet_success_once", &b""[..]).await?;
-        log::debug!("[SETUP_SCRIPT] prepared files, done");
+        log::trace!("[SETUP_SCRIPT] prepared files, done");
         Ok(())
     }
 
     pub(crate) async fn wait_for_done(ip: Ipv4Addr, user: impl AsRef<str>, pubkey_path: impl AsRef<Path>) -> Result<(), Error> {
-        log::debug!("[SETUP_SCRIPT] connecting to server for waiting for scripts done...: {}", ip);
+        log::trace!("[SETUP_SCRIPT] connecting to server for waiting for scripts done...: {}", ip);
         let session = Session::connect(ip, PRIMARY_SERVER_FORWARDED_PORT, user, pubkey_path).await?;
         let start_waiting = Instant::now();
+
+        // 2 分以内にプロセスが開始された痕跡がなければタイムアウト
         loop {
             let exists_process = session.process_exists("root-setup.zsh").await?;
             let started = !session.file_exists("root_setup_not_yet_started_once").await?;
-            let finished = session.file_exists("root_setup_not_yet_finished_once").await?;
-            let success = session.file_exists("root_setup_not_yet_success_once").await?;
 
-            // プロセスが終わっていて、プロセスを開始した痕跡があるまでループ
-            if !exists_process && started {
-                log::debug!("[SETUP_SCRIPT] root-setup.zsh process disappeared");
-                if !finished {
-                    log::debug!("[SETUP_SCRIPT] root-setup.zsh process illegally stopped");
-                    // 正常に終了できてない
-                    return Err(Error::IllegallyStopped);
-                }
-                if !success {
-                    log::debug!("[SETUP_SCRIPT] root-setup.zsh process failed");
-                    // 正常に終了できていない
-                    return Err(Error::Failed);
-                }
-                log::debug!("[SETUP_SCRIPT] root-setup.zsh process successfully finished");
+            if exists_process || started {
+                log::trace!("[SETUP_SCRIPT] root-setup.zsh process started");
                 break;
             }
 
-            if start_waiting.elapsed() > Duration::from_secs(60 * 10) {
-                log::debug!("[SETUP_SCRIPT] timeout");
-                return Err(Error::Timeout);
+            if start_waiting.elapsed() > Duration::from_secs(60 * 2) {
+                log::trace!("[SETUP_SCRIPT] timeout for process started");
+                return Err(Error::TimeoutToStart);
             }
 
             sleep(Duration::from_secs(5)).await;
         }
-        log::debug!("[SETUP_SCRIPT] waiting for scripts done, done");
+
+        let start_waiting = Instant::now();
+        loop {
+            let exists_process = session.process_exists("root-setup.zsh").await?;
+            let started = !session.file_exists("root_setup_not_yet_started_once").await?;
+            let finished = !session.file_exists("root_setup_not_yet_finished_once").await?;
+            let success = !session.file_exists("root_setup_not_yet_success_once").await?;
+
+            // プロセスが終わっていて、プロセスを開始した痕跡があるまでループ
+            if !exists_process && started {
+                log::trace!("[SETUP_SCRIPT] root-setup.zsh process disappeared");
+                if !finished {
+                    log::trace!("[SETUP_SCRIPT] root-setup.zsh process illegally stopped");
+                    // 正常に終了できてない
+                    return Err(Error::IllegallyStopped);
+                }
+                if !success {
+                    log::trace!("[SETUP_SCRIPT] root-setup.zsh process failed");
+                    // 正常に終了できていない
+                    return Err(Error::Failed);
+                }
+                log::trace!("[SETUP_SCRIPT] root-setup.zsh process successfully finished");
+                break;
+            }
+
+            if start_waiting.elapsed() > Duration::from_secs(60 * 10) {
+                log::trace!("[SETUP_SCRIPT] timeout");
+                return Err(Error::TimeoutToFinish);
+            }
+
+            sleep(Duration::from_secs(5)).await;
+        }
+        log::trace!("[SETUP_SCRIPT] waiting for scripts done, done");
         Ok(())
     }
 
@@ -115,7 +136,9 @@ impl ServiceScript {
     }
 
     pub(crate) fn render(&self, data: impl Serialize) -> Result<String, Error> {
+        log::trace!("[SETUP_SCRIPT] rendering script: {} {}", self.as_str(), serde_json::to_string_pretty(&data).unwrap());
         let script = TEMPLATE_ENGINE.template(self.as_str()).render(data).to_string()?;
+        log::trace!("[SETUP_SCRIPT] rendered script: {}", script);
         Ok(script)
     }
 }

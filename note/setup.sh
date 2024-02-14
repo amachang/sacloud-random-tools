@@ -2,8 +2,13 @@
 
 set -x
 
-if apt update && apt install -y zsh; then
+if ! apt update; then
     echo "Error: apt update failed"
+    exit 1
+fi
+
+if ! apt install -y zsh; then
+    echo "Error: apt install zsh failed"
     exit 1
 fi
 

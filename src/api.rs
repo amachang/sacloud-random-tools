@@ -342,12 +342,6 @@ impl Server {
         resource_value.map(|resource_value| Self::from_value(resource_value)).transpose()
     }
 
-    pub(crate) async fn get(server_id: impl Borrow<ServerId>) -> Result<Server, Error> {
-        let server_id = server_id.borrow();
-        let resource_value = ResourceKind::Server.get(server_id.to_string()).await?;
-        Server::from_value(resource_value)
-    }
-
     pub(crate) async fn create(info: ServerInfo) -> Result<Server, Error> {
         let req_value = info.to_value()?;
         let res_value = ResourceKind::Server.create(req_value).await?;
@@ -421,13 +415,6 @@ impl Server {
 
     pub(crate) fn id(&self) -> &ServerId {
         &self.id
-    }
-
-    pub(crate) fn tags(&self) -> Vec<&str> {
-        let Some(tags) = self.info.tags.as_ref() else {
-            panic!("ensure tags is Some before calling this method");
-        };
-        tags.iter().map(|s| s.as_str()).collect()
     }
 }
 
@@ -922,6 +909,10 @@ impl Appliance {
         };
         let mut shared_ips = Vec::new();
         for interface in interfaces {
+            let Some(interface) = interface.as_ref() else {
+                // null, Unconnected interface is ignored
+                continue;
+            };
             let Some(siwth) = interface.switch.as_ref() else {
                 return Err(Error::ApplianceInterfaceDoesntHaveConnectedSwitchInfo);
             };
@@ -957,7 +948,7 @@ pub(crate) struct ApplianceInfo {
     class: Option<ApplianceClass>,
 
     #[serde(rename = "Interfaces", skip_serializing_if = "Option::is_none")]
-    interfaces: Option<Vec<ApplianceInterface>>,
+    interfaces: Option<Vec<Option<ApplianceInterface>>>,
 
     #[serde(flatten)]
     class_info: Option<ApplianceClassInfo>,
