@@ -100,6 +100,27 @@ EOF
     echo "Setup Vim...done"
 }
 
+# -- git setup --
+
+function setup_git() {
+    echo "Setup Git..."
+
+    local user={{git.user}}
+    local email={{git.email}}
+
+    if ! grep -q "name" "$HOME/.gitconfig"; then
+        echo "Enter your git username: "
+        git config --global user.name "$user" || throw GitError
+    fi
+
+    if ! grep -q "email" "$HOME/.gitconfig"; then
+        echo "Enter your git email: "
+        git config --global user.email "$email" || throw GitError
+    fi
+
+    echo "Setup Git...done"
+}
+
 # -- main --
 
 setup_zsh

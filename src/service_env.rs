@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, net::{IpAddr, Ipv4Addr}};
+use std::{borrow::Borrow, net::{IpAddr, Ipv4Addr}, path::PathBuf};
 use once_cell::sync::Lazy;
 use serde_json::json;
 use serde::{Serialize, Deserialize};
@@ -62,6 +62,9 @@ impl EquipmentKind {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Config {
     #[serde()]
+    pub(crate) git: GitConfig,
+
+    #[serde()]
     pub(crate) server: ServerConfig,
 }
 
@@ -75,6 +78,18 @@ impl Default for Config {
     fn default() -> Self {
         serde_json::from_str(CONFIG_JSON).unwrap()
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct GitConfig {
+    #[serde()]
+    pub(crate) user: String,
+
+    #[serde()]
+    pub(crate) email: String,
+
+    #[serde()]
+    pub(crate) local_repo_path: PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
