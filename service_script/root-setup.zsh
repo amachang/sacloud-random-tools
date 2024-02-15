@@ -37,7 +37,7 @@ function ensure_packages() {
     add-apt-repository -y ppa:neovim-ppa/stable || throw AptError
 
     apt-get update || throw AptError
-    apt-get install -y jq coreutils openresolv lua5.4 neovim wireguard build-essential || throw AptError
+    apt-get install -y jq coreutils openresolv lua5.4 neovim wireguard build-essential pkg-config libssl-dev || throw AptError
 
     echo "Ensure packages...done"
 }
@@ -53,6 +53,31 @@ function setup_user() {
     fi
 
     echo "Setup user...done"
+}
+
+# -- allow legacy negotiation for openssl --
+# Some other servers still use legacy negotiation, so we need to allow it.
+
+function allow_legacy_negotiation_for_openssl() {
+    echo "Allow legacy negotiation for openssl..."
+
+    local openssl_conf="/etc/ssl/openssl.cnf"
+
+    if [[ ! -f "$openssl_conf" ]]; then
+        echo "openssl.cnf not found"
+        throw AllowLegacyNegotiationError
+    fi
+
+    if ! grep -q '[system_default_sect]' "$openssl_conf"; then
+        echo "openssl.cnf does not contain [system_default_sect]"
+        throw AllowLegacyNegotiationError
+    fi
+
+    if ! grep -q 'UnsafeLegacyRenegotiation' "$openssl_conf"; then
+        sed -i '/\[system_default_sect\]/a Options = UnsafeLegacyRenegotiation' /etc/ssl/openssl.cnf || throw AllowLegacyNegotiationError
+    fi
+
+    echo "Allow legacy negotiation for openssl...done"
 }
 
 # -- wireguard setup --
@@ -263,6 +288,7 @@ function ensure_connected_internet_through_wireguard() {
     ensure_directly_connected_internet
 
     ensure_packages
+    allow_legacy_negotiation_for_openssl
     setup_user
     # add new setup here
 
