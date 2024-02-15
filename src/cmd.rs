@@ -181,7 +181,7 @@ impl UpdateCmd {
                             .expect("[FATAL_ERROR] failed to apply vpc router config with firewall");
                         Appliance::wait_available(&vpc_router_id).await
                             .expect("[FATAL_ERROR] failed to wait vpc router available");
-                        log::info!("[IMORTANT] firewall ensured");
+                        log::info!("[IMPORTANT] firewall ensured");
                     })
                 });
                 handler.join().expect("[FATAL_ERROR] failed to join handler");
@@ -191,22 +191,6 @@ impl UpdateCmd {
 
         Appliance::wait_available(vpc_router.id()).await?;
         log::info!("[CHECKED] vpc router availability check: ok");
-
-        // Setup Script Note
-        let note = if let Some(note) = PrimaryServerSetupShellNote::try_get(prefix).await? {
-            log::info!("[CHECKED] note existence check: already exists, id: {}, ok", note.id());
-            log::info!("[START] note content updating if needed...");
-            PrimaryServerSetupShellNote::update_content_if_needed(note.id()).await?;
-            Note::wait_available(note.id()).await?;
-            log::info!("[DONE] note content updated, ok");
-            note
-        } else {
-            log::info!("[START] note existence check: not exists, creating...");
-            let note = PrimaryServerSetupShellNote::create(prefix).await?;
-            Note::wait_available(note.id()).await?;
-            log::info!("[DONE] note created, id: {}, ok", note.id());
-            note
-        };
 
         // Server
         let server = if let Some(server) = PrimaryServer::try_get(prefix).await? {
@@ -230,6 +214,23 @@ impl UpdateCmd {
             Disk::wait_available(disk.id()).await?;
             log::info!("[CHECKED] disk availability check: ok");
         } else {
+            // Setup Startup Script
+            let note = if let Some(note) = PrimaryServerSetupShellNote::try_get(prefix).await? {
+                log::info!("[CHECKED] note existence check: already exists, id: {}, ok", note.id());
+                log::info!("[START] note content updating if needed...");
+                PrimaryServerSetupShellNote::update_content_if_needed(note.id()).await?;
+                Note::wait_available(note.id()).await?;
+                log::info!("[DONE] note content updated, ok");
+                note
+            } else {
+                log::info!("[START] note existence check: not exists, creating...");
+                let note = PrimaryServerSetupShellNote::create(prefix).await?;
+                Note::wait_available(note.id()).await?;
+                log::info!("[DONE] note created, id: {}, ok", note.id());
+                note
+            };
+
+            // Setup SSH Public Key
             let ssh_public_key = if let Some(current_ssh_public_key) = PrimaryServerSshPublicKey::try_get(prefix).await? {
                 log::info!("[CHECKED] ssh public key existence check: already exists, id: {}, ok", current_ssh_public_key.id());
                 if let Some(ssh_public_key) = ssh_public_key {
