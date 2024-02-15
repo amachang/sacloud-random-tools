@@ -1,6 +1,6 @@
-use std::{path::PathBuf, io, time::Duration};
+use std::{path::PathBuf, io, time::Duration, thread};
 use clap::{Parser, Subcommand};
-use tokio::{fs, time::sleep};
+use tokio::{fs, time::sleep, runtime::Runtime};
 use serde::Serialize;
 use dirs::home_dir;
 
@@ -167,6 +167,28 @@ impl UpdateCmd {
         Appliance::apply_config(vpc_router.id()).await?;
         log::info!("[DONE] vpc router config updated without firewall, ok");
 
+        // Guard で戻す
+        struct FirewallGuard(ApplianceId);
+        impl Drop for FirewallGuard {
+            fn drop(&mut self) {
+                log::info!("[IMPORTANT] ensure vpc router config with firewall...");
+                let vpc_router_id = self.0.clone();
+                let handler = thread::spawn(move || {
+                    Runtime::new().expect("[FATAL_ERROR] failed to new runtime").block_on(async move {
+                        PrimaryVpcRouter::update_config(&vpc_router_id, true).await
+                            .expect("[FATAL_ERROR] failed to update vpc router config with firewall");
+                        Appliance::apply_config(&vpc_router_id).await
+                            .expect("[FATAL_ERROR] failed to apply vpc router config with firewall");
+                        Appliance::wait_available(&vpc_router_id).await
+                            .expect("[FATAL_ERROR] failed to wait vpc router available");
+                        log::info!("[IMORTANT] firewall ensured");
+                    })
+                });
+                handler.join().expect("[FATAL_ERROR] failed to join handler");
+            }
+        }
+        let _firewall_guard = FirewallGuard(vpc_router.id().clone());
+
         Appliance::wait_available(vpc_router.id()).await?;
         log::info!("[CHECKED] vpc router availability check: ok");
 
@@ -275,19 +297,6 @@ impl UpdateCmd {
         ServiceScript::wait_for_done(public_shared_ip, "ubuntu", &ssh_private_key_path).await?;
         log::info!("[DONE] server setup script finished, ok");
 
-
-        {
-            // TODO RAII pattern bellows for ensuring the firewall is restored
-            log::info!("[START] vpc router config updating...");
-            PrimaryVpcRouter::update_config(vpc_router.id(), true).await?;
-            Appliance::apply_config(vpc_router.id()).await?;
-            log::info!("[DONE] vpc router config updated, ok");
-
-            Appliance::wait_available(vpc_router.id()).await?;
-            log::info!("[CHECKED] vpc router availability check: ok");
-        }
-
-        log::info!("[DONE] all checks passed, ok");
         Ok(())
     }
 }

@@ -111,6 +111,18 @@ function disable_auto_start_and_stop_wireguard_for_update() {
 
     # WireGuardコマンドが存在するか確認
     if command -v wg-quick > /dev/null; then
+        # systemctl コマンドが動いていたら、終わるまで待つ
+        while ps aux | grep "systemctl" | grep -v grep > /dev/null; do
+            echo "Waiting for systemctl process to be down..."
+            sleep 1
+        done
+
+        # wg-quick プロセスが動いていたら、終わるまで待つ
+        while ps aux | grep "wg-quick" | grep -v grep > /dev/null; do   
+            echo "Waiting for wg-quick process to be down..."
+            sleep 1
+        done
+
         # WireGuardサービスが有効化されているか確認し、一時的に無効化
         if systemctl is-enabled --quiet wg-quick@wg0.service; then
             systemctl disable wg-quick@wg0.service || throw WireGuardStopError
