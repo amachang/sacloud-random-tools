@@ -32,12 +32,25 @@ function ensure_packages() {
         echo "\$nrconf{restart} = 'a';" >> /etc/needrestart/conf.d/50-autorestart.conf || throw AptError
     fi
 
+    # apt-daily サービスを無効化
+    # Firewall を切って再起動のタイミングで apt upgrade をしたいので、 daily サービスを無効化
+    local -a apt_daily_services=(apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer)
+    for service in $apt_daily_services; do
+        if systemctl is-enabled --quiet "$service"; then
+            systemctl disable "$service" || throw AptError
+        fi
+        if systemctl is-active --quiet "$service"; then
+            systemctl stop "$service" || throw AptError
+        fi
+    done
+
     apt-get update || throw AptError
     apt-get install -y software-properties-common || throw AptError
     add-apt-repository -y ppa:neovim-ppa/stable || throw AptError
 
     apt-get update || throw AptError
     apt-get install -y jq coreutils openresolv lua5.4 neovim wireguard build-essential pkg-config libssl-dev || throw AptError
+    apt-get upgrade -y || throw AptError
 
     echo "Ensure packages...done"
 }
