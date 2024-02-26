@@ -53,6 +53,7 @@ impl ServiceScript {
     pub(crate) async fn prepare_for_server(ip: Ipv4Addr, user: impl AsRef<str>, pubkey_path: impl AsRef<Path>) -> Result<(), Error> {
         let render_params = upon::value!{
             git: &CONFIG.git,
+            packages: &CONFIG.packages,
             wireguard: &CONFIG.server.wireguard,
             public_shared_ip: ip,
         };

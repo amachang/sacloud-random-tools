@@ -62,6 +62,9 @@ impl EquipmentKind {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Config {
     #[serde()]
+    pub(crate) packages: Vec<String>,
+
+    #[serde()]
     pub(crate) git: GitConfig,
 
     #[serde()]

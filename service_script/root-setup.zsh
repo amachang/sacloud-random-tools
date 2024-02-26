@@ -10,6 +10,8 @@ autoload -Uz throw
 function ensure_packages() {
     echo "Ensure packages..."
 
+    local -a packages={{packages}}
+
     # 時々、 DNS 解決が遅れることがあるため、いろいろ確認
     while ! nslookup -timeout=1 -type=A archive.ubuntu.com > /dev/null; do
         echo "Waiting for DNS resolution of archive.ubuntu.com..."
@@ -50,6 +52,7 @@ function ensure_packages() {
 
     apt-get update || throw AptError
     apt-get install -y jq coreutils openresolv lua5.4 neovim wireguard build-essential pkg-config libssl-dev || throw AptError
+    apt-get install -y "${(@)packages}" || throw AptError
     apt-get upgrade -y || throw AptError
 
     echo "Ensure packages...done"
