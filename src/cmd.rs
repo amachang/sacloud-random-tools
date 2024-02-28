@@ -18,6 +18,7 @@ use crate::{
     },
     service_env::{
         self,
+        CONFIG,
         PRIMARY_SERVER_FORWARDED_PORT,
         PrimaryVpcRouter,
         PrimarySwitch,
@@ -77,6 +78,7 @@ impl From<ssh::Error> for Error {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Cmd {
     SyncRemoteDir(SyncRemoteDirCmd),
+    PortForwarding(PortForwardingCmd),
     Update(UpdateCmd),
     Clean(CleanCmd),
 }
@@ -85,6 +87,7 @@ impl Cmd {
     pub(crate) async fn run(&self) -> Result<(), Error> {
         match self {
             Cmd::SyncRemoteDir(cmd) => cmd.run().await,
+            Cmd::PortForwarding(cmd) => cmd.run().await,
             Cmd::Update(cmd) => cmd.run().await,
             Cmd::Clean(cmd) => cmd.run().await,
         }
@@ -97,7 +100,7 @@ pub(crate) struct SyncRemoteDirCmd {
     prefix: String,
 
     #[arg(long)]
-    pubkey: Option<PathBuf>,
+    privkey: Option<PathBuf>,
 
     #[arg(long)]
     local_dir: PathBuf,
@@ -111,14 +114,7 @@ impl SyncRemoteDirCmd {
         let prefix = self.prefix.as_str();
         let local_dir = self.local_dir.as_path();
         let remote_dir = self.remote_dir.as_path();
-
-        let home_dir = home_dir().expect("home dir is prerequisite");
-        let ssh_public_key_path = if let Some(ssh_public_key_path) = self.pubkey.as_ref() {
-            ssh_public_key_path.to_path_buf()
-        } else {
-            home_dir.join(".ssh/id_rsa")
-        };
-
+        let ssh_public_key_path = self.privkey.clone().unwrap_or(default_privkey_path());
 
         let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? else {
             return Err(Error::PrimaryVpcRouterNotExists);
@@ -128,7 +124,43 @@ impl SyncRemoteDirCmd {
 
         session.sync_remote_dir(remote_dir, local_dir).await?;
 
-        Ok(())
+        loop {
+            // I don't know the proer way to keep the session alive
+            sleep(Duration::from_secs(30)).await;
+        }
+    }
+}
+
+#[derive(Debug, Parser)]
+pub(crate) struct PortForwardingCmd {
+    #[arg(long)]
+    prefix: String,
+
+    #[arg(long)]
+    privkey: Option<PathBuf>,
+}
+
+impl PortForwardingCmd {
+    pub(crate) async fn run(&self) -> Result<(), Error> {
+        let prefix = self.prefix.as_str();
+        let ssh_public_key_path = self.privkey.clone().unwrap_or(default_privkey_path());
+
+        let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? else {
+            return Err(Error::PrimaryVpcRouterNotExists);
+        };
+        let public_shared_ip = vpc_router.public_shared_ip()?;
+        let session = Session::connect(public_shared_ip, PRIMARY_SERVER_FORWARDED_PORT, "ubuntu", ssh_public_key_path).await?;
+
+        for forwarding_port in &CONFIG.forwarding_ports {
+            log::info!("[START] port forwarding: {} -> {}", forwarding_port.remote_port, forwarding_port.local_port);
+            session.forward_remote_port(forwarding_port.remote_port, forwarding_port.local_port).await?;
+            log::info!("[DONE] port forwarding: ok");
+        }
+
+        loop {
+            // I don't know the proer way to keep the session alive
+            sleep(Duration::from_secs(5)).await;
+        }
     }
 }
 
@@ -146,19 +178,9 @@ pub(crate) struct UpdateCmd {
 
 impl UpdateCmd {
     pub(crate) async fn run(&self) -> Result<(), Error> {
-        let home_dir = home_dir().expect("home dir is prerequisite");
         let prefix = self.prefix.as_str();
-        let ssh_public_key_path = if let Some(ssh_public_key_path) = self.pubkey.as_ref() {
-            ssh_public_key_path.to_path_buf()
-        } else {
-            home_dir.join(".ssh/id_rsa.pub")
-        };
-
-        let ssh_private_key_path = if let Some(ssh_private_key_path) = self.privkey.as_ref() {
-            ssh_private_key_path.to_path_buf()
-        } else {
-            home_dir.join(".ssh/id_rsa")
-        };
+        let ssh_public_key_path = self.pubkey.clone().unwrap_or(default_pubkey_path());
+        let ssh_private_key_path = self.privkey.clone().unwrap_or(default_privkey_path());
 
         let ssh_public_key = match fs::read_to_string(&ssh_public_key_path).await {
             Ok(ssh_public_key) => Some(ssh_public_key),
@@ -472,6 +494,14 @@ impl CleanCmd {
 
         Ok(())
     }
+}
+
+fn default_pubkey_path() -> PathBuf {
+    home_dir().expect("home dir is prerequisite").join(".ssh/id_rsa.pub")
+}
+
+fn default_privkey_path() -> PathBuf {
+    home_dir().expect("home dir is prerequisite").join(".ssh/id_rsa")
 }
 
 /* TODO remove old code

@@ -71,6 +71,21 @@ function setup_user() {
     echo "Setup user...done"
 }
 
+# -- setup service_env --
+
+function setup_service_env() {
+    echo "Setup service_env..."
+
+    local -a service_dirs={{service_dirs}}
+
+    for dir in $service_dirs; do
+        mkdir -p "$dir" || throw ServiceEnvError
+        chown -R ubuntu:ubuntu "$dir" || throw ServiceEnvError
+    done
+
+    echo "Setup service_env...done"
+}
+
 # -- allow legacy negotiation for openssl --
 # Some other servers still use legacy negotiation, so we need to allow it.
 

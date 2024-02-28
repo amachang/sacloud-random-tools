@@ -54,6 +54,8 @@ impl ServiceScript {
         let render_params = upon::value!{
             git: &CONFIG.git,
             packages: &CONFIG.packages,
+            service_dirs: &CONFIG.server.service_dirs,
+            zshrc_lines: &CONFIG.server.zshrc_lines,
             wireguard: &CONFIG.server.wireguard,
             public_shared_ip: ip,
         };

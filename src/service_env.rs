@@ -68,11 +68,29 @@ pub(crate) struct Config {
     pub(crate) git: GitConfig,
 
     #[serde()]
+    pub(crate) forwarding_ports: Vec<ForwardingPortConfig>,
+
+    #[serde()]
     pub(crate) server: ServerConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ForwardingPortConfig {
+    #[serde()]
+    pub(crate) remote_port: u16,
+
+    #[serde()]
+    pub(crate) local_port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ServerConfig {
+    #[serde()]
+    pub(crate) service_dirs: Vec<String>,
+
+    #[serde()]
+    pub(crate) zshrc_lines: Vec<String>,
+
     #[serde()]
     pub(crate) wireguard: WireGuardConfig,
 }

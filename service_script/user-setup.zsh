@@ -10,6 +10,8 @@ autoload -Uz throw
 function setup_zsh() {
     echo "Setup zsh..."
 
+    local -a zshrc_lines={{zshrc_lines}}
+
     chsh -s $(which zsh) || throw ZshError
 
     if ! [[ -f "$HOME/.zshrc" ]]; then
@@ -20,6 +22,12 @@ function setup_zsh() {
         echo "autoload -Uz compinit" >> "$HOME/.zshrc" || throw ZshError
         echo "compinit" >> "$HOME/.zshrc" || throw ZshError
     fi
+
+    for line in $zshrc_lines; do
+        if ! grep -q "$line" "$HOME/.zshrc"; then
+            echo "$line" >> "$HOME/.zshrc" || throw ZshError
+        fi
+    done
 
     echo "Setup zsh...done"
 }

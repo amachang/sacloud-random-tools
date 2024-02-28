@@ -1,6 +1,6 @@
 use std::{time::Duration, path::Path, net::Ipv4Addr, time::Instant, sync::Arc};
 use shell_escape::unix::escape;
-use openssh::{self, SessionBuilder, Stdio, KnownHosts};
+use openssh::{self, SessionBuilder, Stdio, KnownHosts, ForwardType, Socket};
 use openssh_sftp_client::{self, Sftp};
 use openssh_sftp_protocol_error::ErrorCode as SftpErrorKind;
 use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, AsyncBufReadExt}, time::{timeout, interval}, net::TcpStream, fs::File};
@@ -160,6 +160,17 @@ impl Session {
         }
         log::info!("[SSH] done syncing remote dir: {} -> {}", remote_dir_path.display(), local_dir_path.display());
 
+        Ok(())
+    }
+
+    pub(crate) async fn forward_remote_port(&self, remote_port: u16, local_port: u16) -> Result<(), Error> {
+        log::trace!("[SSH] forwarding remote port...: {} -> {}", remote_port, local_port);
+        self.session.request_port_forward(
+            ForwardType::Local,
+            Socket::new("127.0.0.1", local_port),
+            Socket::new("127.0.0.1", remote_port),
+        ).await?;
+        log::trace!("[SSH] forwarded remote port: {} -> {}", remote_port, local_port);
         Ok(())
     }
 
