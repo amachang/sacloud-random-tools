@@ -18,6 +18,7 @@ use crate::{
     },
     service_env::{
         self,
+        PRIMARY_SERVER_FORWARDED_PORT,
         PrimaryVpcRouter,
         PrimarySwitch,
         PrimaryServer,
@@ -28,6 +29,10 @@ use crate::{
     service_script::{
         self,
         ServiceScript,
+    },
+    ssh::{
+        self,
+        Session,
     },
 };
 
@@ -42,6 +47,7 @@ pub(crate) enum Error {
     ServiceScriptError(service_script::Error),
     ApiError(api::Error),
     ServiceEnvError(service_env::Error),
+    SshError(ssh::Error),
 }
 
 impl From<api::Error> for Error {
@@ -62,8 +68,15 @@ impl From<service_script::Error> for Error {
     }
 }
 
+impl From<ssh::Error> for Error {
+    fn from(e: ssh::Error) -> Self {
+        Error::SshError(e)
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum Cmd {
+    SyncRemoteDir(SyncRemoteDirCmd),
     Update(UpdateCmd),
     Clean(CleanCmd),
 }
@@ -71,9 +84,51 @@ pub(crate) enum Cmd {
 impl Cmd {
     pub(crate) async fn run(&self) -> Result<(), Error> {
         match self {
+            Cmd::SyncRemoteDir(cmd) => cmd.run().await,
             Cmd::Update(cmd) => cmd.run().await,
             Cmd::Clean(cmd) => cmd.run().await,
         }
+    }
+}
+
+#[derive(Debug, Parser)]
+pub(crate) struct SyncRemoteDirCmd {
+    #[arg(long)]
+    prefix: String,
+
+    #[arg(long)]
+    pubkey: Option<PathBuf>,
+
+    #[arg(long)]
+    local_dir: PathBuf,
+
+    #[arg(long)]
+    remote_dir: PathBuf,
+}
+
+impl SyncRemoteDirCmd {
+    pub(crate) async fn run(&self) -> Result<(), Error> {
+        let prefix = self.prefix.as_str();
+        let local_dir = self.local_dir.as_path();
+        let remote_dir = self.remote_dir.as_path();
+
+        let home_dir = home_dir().expect("home dir is prerequisite");
+        let ssh_public_key_path = if let Some(ssh_public_key_path) = self.pubkey.as_ref() {
+            ssh_public_key_path.to_path_buf()
+        } else {
+            home_dir.join(".ssh/id_rsa")
+        };
+
+
+        let Some(vpc_router) = PrimaryVpcRouter::try_get(prefix).await? else {
+            return Err(Error::PrimaryVpcRouterNotExists);
+        };
+        let public_shared_ip = vpc_router.public_shared_ip()?;
+        let session = Session::connect(public_shared_ip, PRIMARY_SERVER_FORWARDED_PORT, "ubuntu", ssh_public_key_path).await?;
+
+        session.sync_remote_dir(remote_dir, local_dir).await?;
+
+        Ok(())
     }
 }
 

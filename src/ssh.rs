@@ -3,9 +3,11 @@ use shell_escape::unix::escape;
 use openssh::{self, SessionBuilder, Stdio, KnownHosts};
 use openssh_sftp_client::{self, Sftp};
 use openssh_sftp_protocol_error::ErrorCode as SftpErrorKind;
-use tokio::{io::{AsyncRead, AsyncReadExt, BufReader, AsyncBufReadExt}, time::{timeout, interval}, net::TcpStream};
+use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, AsyncBufReadExt}, time::{timeout, interval}, net::TcpStream, fs::File};
 use serde::Serialize;
 use regex::Regex;
+use futures::StreamExt;
+use bytes::BytesMut;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum Error {
@@ -17,6 +19,8 @@ pub(crate) enum Error {
     CouldntTakeRemoteProcessStdout,
     ParseFailedPsOutputLine,
     CouldntGetRemoteFileType,
+    CouldntReadRemoteFile(String),
+    CouldntWriteLocalFile(String),
     PathExistsButNotFile(String),
 }
 
@@ -60,7 +64,7 @@ impl Session {
                 .user(user.to_string())
                 .port(port)
                 .keyfile(pubkey_path)
-                .connect_timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(20))
                 .known_hosts_check(KnownHosts::Accept)
                 .server_alive_interval(Duration::from_secs(60))
                 .connect_mux(ip.to_string())
@@ -98,6 +102,65 @@ impl Session {
             _sftp_process: sftp_process,
             sftp,
         })
+    }
+
+    pub(crate) async fn sync_remote_dir(&self, remote_dir_path: impl AsRef<Path>, local_dir_path: impl AsRef<Path>) -> Result<(), Error> {
+        let remote_dir_path = remote_dir_path.as_ref();
+        let local_dir_path = local_dir_path.as_ref();
+        log::trace!("[SSH] syncing remote file...: {} -> {}", remote_dir_path.display(), local_dir_path.display());
+        let mut fs = self.sftp.fs();
+        log::trace!("[SSH] opening remote dir...: {}", remote_dir_path.display());
+        let remote_dir = fs.open_dir(remote_dir_path).await?;
+        log::trace!("[SSH] reading remote dir...: {}", remote_dir_path.display());
+        let dir_entry_stream = remote_dir.read_dir();
+        let mut dir_entry_stream = Box::pin(dir_entry_stream);
+
+        log::trace!("[SSH] iterating remote dir...: {}", remote_dir_path.display());
+        while let Some(entry) = dir_entry_stream.next().await {
+            let entry = entry?;
+            let filename = entry.filename();
+            if filename == Path::new(".") || filename == Path::new("..") {
+                log::trace!("[SSH] skipping special file...: {}", filename.display());
+                continue;
+            }
+            let local_path = local_dir_path.join(filename);
+            let remote_path = remote_dir_path.join(filename);
+
+            log::info!("[SSH] syncing remote file...: {} -> {}", remote_path.display(), local_path.display());
+            let mut remote_file = self.sftp.open(&remote_path).await?;
+            let mut local_file = File::create(&local_path).await?;
+            let chunk_size = 4096usize;
+            let mut buf = BytesMut::with_capacity(chunk_size);
+            let mut total = 0;
+            let mut last_log_time = Instant::now();
+            loop {
+                let maybe_buf = remote_file.read(chunk_size as u32, buf).await.map_err(|e| Error::CouldntReadRemoteFile(e.to_string()))?;
+                let Some(b) = maybe_buf else {
+                    break;
+                };
+                buf = b;
+
+                // if my understanding is correct, the below assertions should never fail
+                assert!(buf.len() <= chunk_size);
+                assert!(buf.capacity() == chunk_size);
+
+                total += buf.len();
+
+                local_file.write_all(&buf).await.map_err(|e| Error::CouldntWriteLocalFile(e.to_string()))?;
+                if last_log_time.elapsed() > Duration::from_secs(5) {
+                    log::trace!("[SSH] downloaded {} {} bytes", remote_path.display(), total);
+                    last_log_time = Instant::now();
+                }
+
+                buf.truncate(0); // reset cursor to first bytes, but not causes allocation
+                assert!(buf.len() <= 0);
+                assert!(buf.capacity() == chunk_size);
+            }
+            local_file.flush().await.map_err(|e| Error::CouldntWriteLocalFile(e.to_string()))?;
+        }
+        log::info!("[SSH] done syncing remote dir: {} -> {}", remote_dir_path.display(), local_dir_path.display());
+
+        Ok(())
     }
 
     pub(crate) async fn put_file(&self, remote_path: impl AsRef<Path>, data: impl AsyncRead + Unpin) -> Result<(), Error> {
