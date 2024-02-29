@@ -68,71 +68,84 @@ impl ServiceScript {
 
         log::trace!("[SETUP_SCRIPT] connecting to server for put scripts...: {}", ip);
         let session = Session::connect(ip, PRIMARY_SERVER_FORWARDED_PORT, user, pubkey_path).await?;
-        session.put_file("root-setup.zsh", root_setup_script).await?;
-        session.put_file("user-setup.zsh", user_setup_script).await?;
-        session.put_file("root_setup_not_yet_started_once", &b""[..]).await?;
-        session.put_file("root_setup_not_yet_finished_once", &b""[..]).await?;
-        session.put_file("root_setup_not_yet_success_once", &b""[..]).await?;
-        log::trace!("[SETUP_SCRIPT] prepared files, done");
-        Ok(())
+
+        // ensure the close of the session, but I want to use `?` operator
+        // currently, async drop is not supported in rust
+        async fn with_session(session: &Session, root_setup_script: &[u8], user_setup_script: &[u8]) -> Result<(), Error> {
+            session.put_file("root-setup.zsh", root_setup_script).await?;
+            session.put_file("user-setup.zsh", user_setup_script).await?;
+            session.put_file("root_setup_not_yet_started_once", &b""[..]).await?;
+            session.put_file("root_setup_not_yet_finished_once", &b""[..]).await?;
+            session.put_file("root_setup_not_yet_success_once", &b""[..]).await?;
+            Ok(())
+        }
+        let result = with_session(&session, root_setup_script, user_setup_script).await;
+        let _ = session.close().await;
+        result
     }
 
     pub(crate) async fn wait_for_done(ip: Ipv4Addr, user: impl AsRef<str>, pubkey_path: impl AsRef<Path>) -> Result<(), Error> {
         log::trace!("[SETUP_SCRIPT] connecting to server for waiting for scripts done...: {}", ip);
-        let session = Session::connect(ip, PRIMARY_SERVER_FORWARDED_PORT, user, pubkey_path).await?;
-        let start_waiting = Instant::now();
 
-        // 2 分以内にプロセスが開始された痕跡がなければタイムアウト
-        loop {
-            let exists_process = session.process_exists("root-setup.zsh").await?;
-            let started = !session.file_exists("root_setup_not_yet_started_once").await?;
+        let session = Session::connect(ip, PRIMARY_SERVER_FORWARDED_PORT, &user, &pubkey_path).await?;
+        async fn with_session(session: &Session) -> Result<(), Error> {
+            let start_waiting = Instant::now();
 
-            if exists_process || started {
-                log::trace!("[SETUP_SCRIPT] root-setup.zsh process started");
-                break;
-            }
+            // 2 分以内にプロセスが開始された痕跡がなければタイムアウト
+            loop {
+                let exists_process = session.process_exists("root-setup.zsh").await?;
+                let started = !session.file_exists("root_setup_not_yet_started_once").await?;
 
-            if start_waiting.elapsed() > Duration::from_secs(60 * 2) {
-                log::trace!("[SETUP_SCRIPT] timeout for process started");
-                return Err(Error::TimeoutToStart);
-            }
-
-            sleep(Duration::from_secs(5)).await;
-        }
-
-        let start_waiting = Instant::now();
-        loop {
-            let exists_process = session.process_exists("root-setup.zsh").await?;
-            let started = !session.file_exists("root_setup_not_yet_started_once").await?;
-            let finished = !session.file_exists("root_setup_not_yet_finished_once").await?;
-            let success = !session.file_exists("root_setup_not_yet_success_once").await?;
-
-            // プロセスが終わっていて、プロセスを開始した痕跡があるまでループ
-            if !exists_process && started {
-                log::trace!("[SETUP_SCRIPT] root-setup.zsh process disappeared");
-                if !finished {
-                    log::trace!("[SETUP_SCRIPT] root-setup.zsh process illegally stopped");
-                    // 正常に終了できてない
-                    return Err(Error::IllegallyStopped);
+                if exists_process || started {
+                    log::trace!("[SETUP_SCRIPT] root-setup.zsh process started");
+                    break;
                 }
-                if !success {
-                    log::trace!("[SETUP_SCRIPT] root-setup.zsh process failed");
-                    // 正常に終了できていない
-                    return Err(Error::Failed);
+
+                if start_waiting.elapsed() > Duration::from_secs(60 * 2) {
+                    log::trace!("[SETUP_SCRIPT] timeout for process started");
+                    return Err(Error::TimeoutToStart);
                 }
-                log::trace!("[SETUP_SCRIPT] root-setup.zsh process successfully finished");
-                break;
+
+                sleep(Duration::from_secs(5)).await;
             }
 
-            if start_waiting.elapsed() > Duration::from_secs(60 * 10) {
-                log::trace!("[SETUP_SCRIPT] timeout");
-                return Err(Error::TimeoutToFinish);
-            }
+            let start_waiting = Instant::now();
+            loop {
+                let exists_process = session.process_exists("root-setup.zsh").await?;
+                let started = !session.file_exists("root_setup_not_yet_started_once").await?;
+                let finished = !session.file_exists("root_setup_not_yet_finished_once").await?;
+                let success = !session.file_exists("root_setup_not_yet_success_once").await?;
 
-            sleep(Duration::from_secs(5)).await;
+                // プロセスが終わっていて、プロセスを開始した痕跡があるまでループ
+                if !exists_process && started {
+                    log::trace!("[SETUP_SCRIPT] root-setup.zsh process disappeared");
+                    if !finished {
+                        log::trace!("[SETUP_SCRIPT] root-setup.zsh process illegally stopped");
+                        // 正常に終了できてない
+                        return Err(Error::IllegallyStopped);
+                    }
+                    if !success {
+                        log::trace!("[SETUP_SCRIPT] root-setup.zsh process failed");
+                        // 正常に終了できていない
+                        return Err(Error::Failed);
+                    }
+                    log::trace!("[SETUP_SCRIPT] root-setup.zsh process successfully finished");
+                    break;
+                }
+
+                if start_waiting.elapsed() > Duration::from_secs(60 * 10) {
+                    log::trace!("[SETUP_SCRIPT] timeout");
+                    return Err(Error::TimeoutToFinish);
+                }
+
+                sleep(Duration::from_secs(5)).await;
+            }
+            log::trace!("[SETUP_SCRIPT] waiting for scripts done, done");
+            Ok(())
         }
-        log::trace!("[SETUP_SCRIPT] waiting for scripts done, done");
-        Ok(())
+        let result = with_session(&session).await;
+        let _ = session.close().await;
+        result
     }
 
     pub(crate) fn as_str(&self) -> &'static str {

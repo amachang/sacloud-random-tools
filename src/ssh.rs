@@ -1,4 +1,4 @@
-use std::{time::Duration, path::Path, net::Ipv4Addr, time::Instant, sync::Arc};
+use std::{time::Duration, path::Path, net::Ipv4Addr, time::Instant};
 use shell_escape::unix::escape;
 use openssh::{self, SessionBuilder, Stdio, KnownHosts, ForwardType, Socket};
 use openssh_sftp_client::{self, Sftp};
@@ -15,7 +15,6 @@ pub(crate) enum Error {
     OpensshError(String, String),
     OpensshSftpError(String, String),
     PsCommandNoLineOutput,
-    CouldntTakeRemoteProcessStdin,
     CouldntTakeRemoteProcessStdout,
     ParseFailedPsOutputLine,
     CouldntGetRemoteFileType,
@@ -43,19 +42,40 @@ impl From<openssh_sftp_client::Error> for Error {
 }
 
 pub(crate) struct Session {
-    session: Arc<openssh::Session>,
-    _sftp_process: openssh::Child<Arc<openssh::Session>>, // for keeping the process alive
+    session: openssh::Session,
     sftp: Sftp,
 }
 
 impl Session {
     pub(crate) async fn connect(ip: Ipv4Addr, port: u16, user: impl AsRef<str>, pubkey_path: impl AsRef<Path>) -> Result<Self, Error> {
+        log::trace!("[SSH] connecting to server...: {}:{}", ip, port);
+
+        // main session
+        let session = Self::new_session(ip, port, &user, &pubkey_path).await?;
+
+        // sftp session
+        // I considered to use the same session for both using Arc, but session close will occur moving the session itself and it's not useful with Arc
+        // So, I decided to use different session for sftp
+        // It's not simple, TODO fix it
+        let sftp_session = Self::new_session(ip, port, &user, &pubkey_path).await?;
+        
+        log::trace!("[SSH] starting sftp subsystem...");
+        let sftp = Sftp::from_session(sftp_session, Default::default()).await?;
+
+        log::trace!("[SSH] connected to server: {}:{}", ip, port);
+        Ok(Self {
+            session,
+            sftp,
+        })
+    }
+
+    async fn new_session(ip: Ipv4Addr, port: u16, user: impl AsRef<str>, pubkey_path: impl AsRef<Path>) -> Result<openssh::Session, Error> {
+        let start_time = Instant::now();
+        let mut interval = interval(Duration::from_secs(20));
+
         let pubkey_path = pubkey_path.as_ref();
         let user = user.as_ref();
 
-        log::trace!("[SSH] connecting to server...: {}:{}", ip, port);
-        let start_time = Instant::now();
-        let mut interval = interval(Duration::from_secs(20));
         let session = loop {
             log::trace!("[SSH] waiting for ssh to be connectable...: {}:{}", ip, port);
             wait_for_ssh_connectable(ip, port).await?;
@@ -67,10 +87,10 @@ impl Session {
                 .connect_timeout(Duration::from_secs(20))
                 .known_hosts_check(KnownHosts::Accept)
                 .server_alive_interval(Duration::from_secs(60))
-                .connect_mux(ip.to_string())
+                .connect(ip.to_string())
                 .await;
             match session {
-                Ok(session) => break Arc::new(session),
+                Ok(session) => break session,
                 Err(e) => {
                     log::trace!("[SSH] couldn't connect to server: {} {} {} {}", ip.to_string(), port, user, pubkey_path.display());
                     log::trace!("[SSH] error: {}", e);
@@ -82,26 +102,7 @@ impl Session {
                 }
             }
         };
-
-        log::trace!("[SSH] starting sftp subsystem...");
-        let mut sftp_process = openssh::Session::to_subsystem(session.clone(), "sftp")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .await?;
-
-        let sftp = Sftp::new(
-            sftp_process.stdin().take().ok_or(Error::CouldntTakeRemoteProcessStdin)?,
-            sftp_process.stdout().take().ok_or(Error::CouldntTakeRemoteProcessStdout)?,
-            Default::default(),
-        ).await?;
-
-        log::trace!("[SSH] connected to server: {}:{}", ip, port);
-        Ok(Self {
-            session,
-            _sftp_process: sftp_process,
-            sftp,
-        })
+        Ok(session)
     }
 
     pub(crate) async fn sync_remote_dir(&self, remote_dir_path: impl AsRef<Path>, local_dir_path: impl AsRef<Path>) -> Result<(), Error> {
@@ -268,6 +269,14 @@ impl Session {
         ps_process.wait().await?;
 
         Ok(found)
+    }
+
+    pub(crate) async fn close(self) -> Result<(), Error> {
+        log::trace!("[SSH] closing session...");
+        self.session.close().await?;
+        self.sftp.close().await?;
+        log::trace!("[SSH] closed session");
+        Ok(())
     }
 }
 

@@ -1,6 +1,6 @@
 use std::{path::PathBuf, io, time::Duration, thread};
 use clap::{Parser, Subcommand};
-use tokio::{fs, time::sleep, runtime::Runtime};
+use tokio::{fs, time::sleep, runtime::Runtime, signal};
 use serde::Serialize;
 use dirs::home_dir;
 
@@ -96,7 +96,7 @@ impl Cmd {
 
 #[derive(Debug, Parser)]
 pub(crate) struct SyncRemoteDirCmd {
-    #[arg(long)]
+    #[arg(long, env = "SACLOUD_SERVICE_PREFIX")]
     prefix: String,
 
     #[arg(long)]
@@ -122,18 +122,18 @@ impl SyncRemoteDirCmd {
         let public_shared_ip = vpc_router.public_shared_ip()?;
         let session = Session::connect(public_shared_ip, PRIMARY_SERVER_FORWARDED_PORT, "ubuntu", ssh_public_key_path).await?;
 
-        session.sync_remote_dir(remote_dir, local_dir).await?;
-
-        loop {
-            // I don't know the proer way to keep the session alive
-            sleep(Duration::from_secs(30)).await;
+        let result = session.sync_remote_dir(remote_dir, local_dir).await;
+        let _ = session.close().await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.into()),
         }
     }
 }
 
 #[derive(Debug, Parser)]
 pub(crate) struct PortForwardingCmd {
-    #[arg(long)]
+    #[arg(long, env = "SACLOUD_SERVICE_PREFIX")]
     prefix: String,
 
     #[arg(long)]
@@ -153,20 +153,33 @@ impl PortForwardingCmd {
 
         for forwarding_port in &CONFIG.forwarding_ports {
             log::info!("[START] port forwarding: {} -> {}", forwarding_port.remote_port, forwarding_port.local_port);
-            session.forward_remote_port(forwarding_port.remote_port, forwarding_port.local_port).await?;
+            match session.forward_remote_port(forwarding_port.remote_port, forwarding_port.local_port).await {
+                Ok(_) => (),
+                Err(e) => {
+                    let _ = session.close().await;
+                    return Err(Error::SshError(e));
+                },
+            }
             log::info!("[DONE] port forwarding: ok");
         }
 
         loop {
             // I don't know the proer way to keep the session alive
-            sleep(Duration::from_secs(5)).await;
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    break;
+                },
+                _ = sleep(Duration::from_secs(5)) => {},
+            }
         }
+        let _ = session.close().await;
+        Ok(())
     }
 }
 
 #[derive(Debug, Parser)]
 pub(crate) struct UpdateCmd {
-    #[arg(long)]
+    #[arg(long, env = "SACLOUD_SERVICE_PREFIX")]
     prefix: String,
 
     #[arg(long)]
@@ -381,8 +394,7 @@ impl UpdateCmd {
 
 #[derive(Debug, Parser)]
 pub(crate) struct CleanCmd {
-
-    #[arg(long)]
+    #[arg(long, env = "SACLOUD_SERVICE_PREFIX")]
     prefix: String,
 
     #[arg(long)]
