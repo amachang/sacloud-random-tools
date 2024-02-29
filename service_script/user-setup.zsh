@@ -23,6 +23,17 @@ function setup_zsh() {
         echo "compinit" >> "$HOME/.zshrc" || throw ZshError
     fi
 
+    if ! grep -q "LC_ALL" "$HOME/.zshrc"; then
+        echo "export LANG=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+        echo "export LC_COLLATE=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+        echo "export LC_CTYPE=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+        echo "export LC_MESSAGES=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+        echo "export LC_MONETARY=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+        echo "export LC_NUMERIC=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+        echo "export LC_TIME=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+        echo "export LC_ALL=en_US.UTF-8" >> "$HOME/.zshrc" || throw ZshError
+    fi
+
     for line in $zshrc_lines; do
         if ! grep -q "$line" "$HOME/.zshrc"; then
             echo "$line" >> "$HOME/.zshrc" || throw ZshError
