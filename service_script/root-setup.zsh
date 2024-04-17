@@ -48,10 +48,10 @@ function ensure_packages() {
 
     apt-get update || throw AptError
     apt-get install -y software-properties-common || throw AptError
-    add-apt-repository -y ppa:neovim-ppa/stable || throw AptError
+    add-apt-repository -y ppa:ubuntuhandbook1/ffmpeg6 || throw AptError
 
     apt-get update || throw AptError
-    apt-get install -y jq coreutils openresolv lua5.4 neovim wireguard build-essential pkg-config libssl-dev || throw AptError
+    apt-get install -y jq coreutils openresolv lua5.4 ack wireguard build-essential pkg-config libssl-dev tmux ca-certificates curl clang-12 cmake fuse || throw AptError
     apt-get install -y "${(@)packages}" || throw AptError
     apt-get upgrade -y || throw AptError
 

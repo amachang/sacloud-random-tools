@@ -60,6 +60,11 @@ function setup_rust() {
 
     rustup update || RustError
     rustup default stable || RustError
+    cargo install sccache || RustError
+
+    if ! grep -q 'RUSTC_WRAPPER' "$HOME/.zshrc"; then
+        echo "export RUSTC_WRAPPER=$HOME/.cargo/bin/sccache" >> "$HOME/.zshrc" || RustError
+    fi
 
     echo "Setup Rust...done"
 }
@@ -69,51 +74,120 @@ function setup_rust() {
 function setup_vim() {
     echo "Setup Vim..."
 
-    curl -fLo "$HOME/.local/share/nvim/site/autoload/plug.vim" --create-dirs \
-        https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim || throw VimError
+
+    if ! [[ -f "$HOME/nvim.appimage" ]]; then
+        curl -L https://github.com/neovim/neovim/releases/latest/download/nvim.appimage -o "$HOME/nvim.appimage" || throw VimError
+        chmod u+x "$HOME/nvim.appimage" || throw VimError
+    fi
 
     if ! [[ -d "$HOME/.config/nvim" ]]; then
         mkdir -p "$HOME/.config/nvim" || throw VimError
     fi
 
-    cat <<EOF >"$HOME/.config/nvim/init.vim" || throw VimError
-"" general settings
+    cat <<EOF >"$HOME/.config/nvim/init.lua" || throw VimError
+vim.opt.number = true
+vim.opt.expandtab = true
+vim.opt.autoindent = true
+vim.opt.smartindent = true
+vim.opt.incsearch = true
+vim.opt.tabstop = 4
+vim.opt.softtabstop = 4
+vim.opt.shiftwidth = 4
+vim.opt.backspace = 'indent,eol,start'
 
-set encoding=utf-8 " not necessary in unix env, but for windows env
-set nu
-set expandtab
-set tabstop=4
-set softtabstop=4
-set shiftwidth=4
-set incsearch
-set backspace=indent,eol,start
+-- lazy.nvim
 
-" escape for terminal mode
-tnoremap <ESC> <c-\\><c-n>
+local lazypath = vim.fn.stdpath('data') .. '/lazy/lazy.nvim'
+if not vim.loop.fs_stat(lazypath) then
+    vim.fn.system({
+        'git',
+        'clone',
+        '--filter=blob:none',
+        'https://github.com/folke/lazy.nvim.git',
+        '--branch=stable', -- latest stable release
+        lazypath,
+    })
+end
+vim.opt.rtp:prepend(lazypath)
 
+-- plugins
 
-"" plugins
+require('lazy').setup({
+    { 'neovim/nvim-lspconfig', tag = 'v0.1.7' },
+})
 
-call plug#begin()
+-- lspconfig: https://github.com/neovim/nvim-lspconfig
 
-Plug 'vim-syntastic/syntastic'
-Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
+local lspconfig = require('lspconfig')
 
-" rust
-Plug 'rust-lang/rust.vim'
+-- - Global mappings.
+-- - See ':help vim.diagnostic.*' for documentation on any of the below functions
+vim.keymap.set('n', '<space>e', vim.diagnostic.open_float)
+vim.keymap.set('n', '[d', vim.diagnostic.goto_prev)
+vim.keymap.set('n', ']d', vim.diagnostic.goto_next)
+vim.keymap.set('n', '<space>q', vim.diagnostic.setloclist)
 
-" python
-Plug 'vim-scripts/indentpython.vim'
-Plug 'nvie/vim-flake8'
+-- - Use LspAttach autocommand to only map the following keys
+-- - after the language server attaches to the current buffer
+vim.api.nvim_create_autocmd('LspAttach', {
+  group = vim.api.nvim_create_augroup('UserLspConfig', {}),
+  callback = function(ev)
+    -- Enable completion triggered by <c-x><c-o>
+    vim.bo[ev.buf].omnifunc = 'v:lua.vim.lsp.omnifunc'
 
-call plug#end()
+    -- Buffer local mappings.
+    -- See ':help vim.lsp.*' for documentation on any of the below functions
+    local opts = { buffer = ev.buf }
+    vim.keymap.set('n', 'gD', vim.lsp.buf.declaration, opts)
+    vim.keymap.set('n', 'gd', vim.lsp.buf.definition, opts)
+    vim.keymap.set('n', 'K', vim.lsp.buf.hover, opts)
+    vim.keymap.set('n', 'gi', vim.lsp.buf.implementation, opts)
+    vim.keymap.set('n', '<C-k>', vim.lsp.buf.signature_help, opts)
+    vim.keymap.set('n', '<space>wa', vim.lsp.buf.add_workspace_folder, opts)
+    vim.keymap.set('n', '<space>wr', vim.lsp.buf.remove_workspace_folder, opts)
+    vim.keymap.set('n', '<space>wl', function()
+      print(vim.inspect(vim.lsp.buf.list_workspace_folders()))
+    end, opts)
+    vim.keymap.set('n', '<space>D', vim.lsp.buf.type_definition, opts)
+    vim.keymap.set('n', '<space>rn', vim.lsp.buf.rename, opts)
+    vim.keymap.set({ 'n', 'v' }, '<space>ca', vim.lsp.buf.code_action, opts)
+    vim.keymap.set('n', 'gr', vim.lsp.buf.references, opts)
+    vim.keymap.set('n', '<space>f', function()
+      vim.lsp.buf.format { async = true }
+    end, opts)
+  end,
+})
 
+-- - Rust
+
+local on_attach = function(client)
+    require('completion').on_attach(client)
+end
+
+lspconfig.rust_analyzer.setup({
+    on_attach = on_attach,
+    settings = {
+        ['rust-analyzer'] = {
+            imports = {
+                granularity = {
+                    group = 'module',
+                },
+                prefix = 'self',
+            },
+            cargo = {
+                buildScripts = {
+                    enable = true,
+                },
+            },
+            procMacro = {
+                enable = true
+            },
+        }
+    }
+})
 EOF
-
-    nvim --headless +PlugInstall +qall || throw VimError
-
     if ! grep -q "vim=nvim" "$HOME/.zshrc"; then
-        echo "alias vim=nvim" >> "$HOME/.zshrc" || throw VimError
+        echo "alias vim=$HOME/nvim.appimage" >> "$HOME/.zshrc" || throw VimError
     fi
 
     echo "Setup Vim...done"
