@@ -61,6 +61,7 @@ function setup_rust() {
     rustup update || RustError
     rustup default stable || RustError
     cargo install sccache || RustError
+    rustup component add rust-analyzer || RustError
 
     if ! grep -q 'RUSTC_WRAPPER' "$HOME/.zshrc"; then
         echo "export RUSTC_WRAPPER=$HOME/.cargo/bin/sccache" >> "$HOME/.zshrc" || RustError
